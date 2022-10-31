@@ -67,14 +67,14 @@ class MicrosoftDnsProvider implements DNSProvider {
         log.info("Creating DNS Record via Microsoft DNS...")
 
         def createPtrRecord = false
-        def fqdn
+        def fqdn = record.fqdn
         def domainName
         def computerName
         try {
             def recordType = record.type
             def recordData = record.recordData
             def command
-            if(!fqdn.endsWith('.')) {
+            if(!fqdn?.endsWith('.')) {
                 fqdn = fqdn + '.'
             }
             domainName = record.networkDomain.name
