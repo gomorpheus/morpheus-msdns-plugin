@@ -72,7 +72,7 @@ class MicrosoftDnsProvider implements DNSProvider {
         def computerName
         try {
             def recordType = record.type
-            def recordData = record.recordData
+            def recordData = record.content
             def command
             if(!fqdn?.endsWith('.')) {
                 fqdn = fqdn + '.'
@@ -100,7 +100,7 @@ class MicrosoftDnsProvider implements DNSProvider {
             if(results.success){
                 return new ServiceResponse<NetworkDomainRecord>(true,null,null,record)
             } else {
-                log.error("An error occurred trying to create a dns record {} via {}: {}",fqdn,integration.name,results.error)
+                log.error("An error occurred trying to create a dns record {} via {}: Exit {}: {}",fqdn,integration.name, results.exitCode,results.error ?: results.output)
                 return new ServiceResponse<NetworkDomainRecord>(false,"Error Creating DNS Record ${results.error}",null,record)
             }
         } catch(e) {
