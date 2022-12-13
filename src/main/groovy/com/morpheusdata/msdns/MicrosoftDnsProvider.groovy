@@ -35,6 +35,7 @@ import com.morpheusdata.response.ServiceResponse
 import groovy.util.logging.Slf4j
 import io.reactivex.Single
 import io.reactivex.Observable
+import org.apache.tools.ant.types.spi.Service
 
 /**
  * The IPAM / DNS Provider implementation for EfficientIP SolidServer
@@ -196,17 +197,35 @@ class MicrosoftDnsProvider implements DNSProvider {
     @Override
     ServiceResponse verifyAccountIntegration(AccountIntegration integration, Map opts) {
         try {
+            ServiceResponse rtn = new ServiceResponse()
             def computerName = integration.servicePath
             def command = "Get-DnsServerSetting"
             if(computerName) {
                 command = "Get-DnsServerSetting -ComputerName ${computerName}"
+            }
+            rtn.errors = [:]
+            if(!integration.name || integration.name == ''){
+                rtn.errors['name'] = 'name is required'
+            }
+            if(!integration.serviceUrl || integration.serviceUrl == ''){
+                rtn.errors['serviceUrl'] = 'DNS Server is required'
+            }
+            if((!integration.servicePassword || integration.servicePassword == '') && (!integration.credentialData?.password || integration.credentialData?.password == '')){
+                rtn.errors['servicePassword'] = 'password is required'
+            }
+            if((!integration.serviceUsername || integration.serviceUsername == '') && (!integration.credentialData?.username || integration.credentialData?.username == '')){
+                rtn.errors['serviceUsername'] = 'username is required'
+            }
+            if(rtn.errors.size() > 0){
+                rtn.success = false
+                return rtn
             }
 
             def commandOpts = getRpcConfig(integration,computerName)
             def results = executeCommand(command, commandOpts)
             log.info("validate dns results: ${results}")
             if(!results.success) {
-                return ServiceResponse.error('dns s ervices not found on host')
+                return ServiceResponse.error('dns services not found on host')
             } else {
                 return ServiceResponse.success()
             }
@@ -226,7 +245,7 @@ class MicrosoftDnsProvider implements DNSProvider {
 
                 SyncTask<NetworkDomainIdentityProjection,Map,NetworkDomain> syncTask = new SyncTask(domainRecords, apiItems as Collection<Map>)
                 syncTask.addMatchFunction { NetworkDomainIdentityProjection domainObject, Map apiItem ->
-                    domainObject.externalId == apiItem.dnszone_id
+                    domainObject.externalId == apiItem['ZoneName']
                 }.onDelete {removeItems ->
                     morpheus.network.domain.remove(integration.id, removeItems).blockingGet()
                 }.onAdd { itemsToAdd ->
