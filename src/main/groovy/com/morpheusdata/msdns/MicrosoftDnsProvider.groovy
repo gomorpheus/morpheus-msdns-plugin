@@ -38,8 +38,9 @@ import io.reactivex.Observable
 import org.apache.tools.ant.types.spi.Service
 
 /**
- * The IPAM / DNS Provider implementation for EfficientIP SolidServer
- * This contains most methods used for interacting directly with the SolidServer 8.0+ REST API
+ * The DNS Provider implementation for Microsoft DNS
+ * This contains most methods used for interacting directly with the Microsoft DNS Powershell Modules via Windows Remote
+ * Management.
  * 
  * @author David Estes
  */
@@ -320,6 +321,9 @@ class MicrosoftDnsProvider implements DNSProvider {
 
     // Cache Zones methods
     def cacheZoneRecords(AccountIntegration integration, Map opts=[:]) {
+
+
+
         morpheus.network.domain.listIdentityProjections(integration.id).buffer(50).flatMap { Collection<NetworkDomainIdentityProjection> poolIdents ->
             return morpheus.network.domain.listById(poolIdents.collect{it.id})
         }.flatMap { NetworkDomain domain ->
@@ -328,16 +332,23 @@ class MicrosoftDnsProvider implements DNSProvider {
 
             if (listResults.success) {
                 List<Map> apiItems = listResults.recordList as List<Map>
-                Observable<NetworkDomainRecordIdentityProjection> domainRecords = morpheus.network.domain.record.listIdentityProjections(domain,null)
-                SyncTask<NetworkDomainRecordIdentityProjection, Map, NetworkDomainRecord> syncTask = new SyncTask<NetworkDomainRecordIdentityProjection, Map, NetworkDomainRecord>(domainRecords, apiItems)
-                return syncTask.addMatchFunction {  NetworkDomainRecordIdentityProjection domainObject, Map apiItem ->
-                    domainObject.externalId == apiItem['DistinguishedName'] //NOTE: This is not exactly the same as the old way , may need to double check this
+
+                //Unfortunately the unique identification matching for msdns requires the full record for now... so we have to load all records...this should be fixed
+
+                Observable<NetworkDomainRecord> domainRecords = morpheus.network.domain.record.listIdentityProjections(domain,null).buffer(50).flatMap {domainIdentities ->
+                    morpheus.network.domain.record.listById(domainIdentities.collect{it.id})
+                }
+                SyncTask<NetworkDomainRecord, Map, NetworkDomainRecord> syncTask = new SyncTask<NetworkDomainRecord, Map, NetworkDomainRecord>(domainRecords, apiItems)
+                return syncTask.addMatchFunction {  NetworkDomainRecord domainObject, Map apiItem ->
+                    (domainObject.externalId == apiItem['DistinguishedName'] && domainObject.internalId == apiItem['RecordData']) ||
+                            (domainObject.externalId == null && domainObject.type == apiItem['RecordType']?.toUpperCase() && domainObject.fqdn == NetworkUtility.getDomainRecordFqdn(apiItem['HostName'] as String, domain.fqdn))
+
                 }.onDelete {removeItems ->
                     morpheus.network.domain.record.remove(domain, removeItems).blockingGet()
                 }.onAdd { itemsToAdd ->
                     addMissingDomainRecords(domain, itemsToAdd)
-                }.withLoadObjectDetails { List<SyncTask.UpdateItemDto<NetworkDomainRecordIdentityProjection,Map>> updateItems ->
-                    Map<Long, SyncTask.UpdateItemDto<NetworkDomainRecordIdentityProjection, Map>> updateItemMap = updateItems.collectEntries { [(it.existingItem.id): it]}
+                }.withLoadObjectDetails { List<SyncTask.UpdateItemDto<NetworkDomainRecord,Map>> updateItems ->
+                    Map<Long, SyncTask.UpdateItemDto<NetworkDomainRecord, Map>> updateItemMap = updateItems.collectEntries { [(it.existingItem.id): it]}
                     return morpheus.network.domain.record.listById(updateItems.collect{it.existingItem.id} as Collection<Long>).map { NetworkDomainRecord domainRecord ->
                         SyncTask.UpdateItemDto<NetworkDomainRecordIdentityProjection, Map> matchItem = updateItemMap[domainRecord.id]
                         return new SyncTask.UpdateItem<NetworkDomainRecord,Map>(existingItem:domainRecord, masterItem:matchItem.masterItem)

@@ -18,8 +18,8 @@ package com.morpheusdata.msdns
 import com.morpheusdata.core.Plugin
 
 /**
- * The entrypoint of the EfficientIP SolidServer Plugin. This is where multiple providers can be registered (if necessary).
- * In the case of SolidServer a simple IPAM/DNS Provider is registered that enables functionality for those areas of automation.
+ * The entrypoint of the Microsoft DNS Plugin. This is where multiple providers can be registered (if necessary).
+ * In the case of Microsoft DNS a simple DNS Provider is registered that enables functionality for those areas of automation.
  * 
  * @author David Estes 
  */
