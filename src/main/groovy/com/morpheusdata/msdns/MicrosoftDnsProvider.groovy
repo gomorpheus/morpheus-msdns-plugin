@@ -97,12 +97,40 @@ class MicrosoftDnsProvider implements DNSProvider {
             }
             def commandOpts = getRpcConfig(integration, computerName)
             def results = executeCommand(command, commandOpts)
-            log.info("add dns results: ${results}")
+            log.debug("add dns results: ${results.dump()}")
 
             if(results.success){
                 return new ServiceResponse<NetworkDomainRecord>(true,null,null,record)
             } else {
-                log.error("An error occurred trying to create a dns record {} via {}: Exit {}: {}",fqdn,integration.name, results.exitCode,results.error ?: results.output)
+                //record may exist already...lets find out
+                String recordName = record.name
+                if(recordName.endsWith(".${domainName}")) {
+                    recordName = recordName.substring(0,recordName.indexOf(".${domainName}"))
+                }
+                command = "Get-DnsServerResourceRecord -Name \"${record.name}\" -ZoneName \"${domainName}\" -RRType A"
+                if(computerName) {
+                    command += " -ComputerName ${computerName}"
+                }
+                results = executeCommand(command, commandOpts)
+                if(results.success) {
+                    //record already exists so just add ptr
+                    if(createPtrRecord) {
+                        def reverseIpArgs = recordData.tokenize('.').reverse()
+                        def reverseIpName = reverseIpArgs[0]
+                        reverseIpArgs[0] = '0'
+                        def ptrName = "${reverseIpArgs.join('.')}.in-addr.arpa".toString()
+                        command ="Add-DnsServerResourceRecordPtr -Name \"${reverseIpName}\" -ZoneName \"${ptrName}\" -AllowUpdateAny -TimeToLive 01:00:00 -AgeRecord -PtrDomainName \"${fqdn}\""
+                        if(computerName) {
+                            command ="Add-DnsServerResourceRecordPtr -ComputerName ${computerName} -Name \"${reverseIpName}\" -ZoneName \"${ptrName}\" -AllowUpdateAny -TimeToLive 01:00:00 -AgeRecord -PtrDomainName \"${fqdn}\""
+                        }
+                        def ptrResults = executeCommand(command, commandOpts)
+                        log.info("Pointer Record Creation Attempt: ${ptrResults}")
+                        return new ServiceResponse<NetworkDomainRecord>(true,null,null,record)
+
+                    }
+                } else {
+                    log.error("An error occurred trying to create a dns record {} via {}: Exit {}: {}",fqdn,integration.name, results.exitCode,results.error ?: results.output)
+                }
                 return new ServiceResponse<NetworkDomainRecord>(false,"Error Creating DNS Record ${results.error}",null,record)
             }
         } catch(e) {
