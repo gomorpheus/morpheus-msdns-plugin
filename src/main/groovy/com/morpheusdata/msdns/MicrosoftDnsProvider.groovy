@@ -102,17 +102,20 @@ class MicrosoftDnsProvider implements DNSProvider {
             if(results.success){
                 return new ServiceResponse<NetworkDomainRecord>(true,null,null,record)
             } else {
+                log.info("Record may already exist for ${record.name}...Checking if it does")
                 //record may exist already...lets find out
                 String recordName = record.name
                 if(recordName.endsWith(".${domainName}")) {
                     recordName = recordName.substring(0,recordName.indexOf(".${domainName}"))
                 }
-                command = "Get-DnsServerResourceRecord -Name \"${record.name}\" -ZoneName \"${domainName}\" -RRType A"
+                command = "Get-DnsServerResourceRecord -Name \"${recordName}\" -ZoneName \"${domainName}\" -RRType A"
                 if(computerName) {
                     command += " -ComputerName ${computerName}"
                 }
                 results = executeCommand(command, commandOpts)
+                log.info("Check Record Results: ${results.dump()}")
                 if(results.success) {
+
                     //record already exists so just add ptr
                     if(createPtrRecord) {
                         def reverseIpArgs = recordData.tokenize('.').reverse()
@@ -124,7 +127,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                             command ="Add-DnsServerResourceRecordPtr -ComputerName ${computerName} -Name \"${reverseIpName}\" -ZoneName \"${ptrName}\" -AllowUpdateAny -TimeToLive 01:00:00 -AgeRecord -PtrDomainName \"${fqdn}\""
                         }
                         def ptrResults = executeCommand(command, commandOpts)
-                        log.info("Pointer Record Creation Attempt: ${ptrResults}")
+                        log.info("Pointer Record Creation Attempt: ${ptrResults.dump()}")
                         return new ServiceResponse<NetworkDomainRecord>(true,null,null,record)
 
                     }
