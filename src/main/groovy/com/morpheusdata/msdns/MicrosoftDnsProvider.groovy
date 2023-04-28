@@ -36,6 +36,9 @@ import groovy.util.logging.Slf4j
 import io.reactivex.Single
 import io.reactivex.Observable
 import org.apache.tools.ant.types.spi.Service
+import groovy.json.JsonSlurper
+import java.util.regex.*
+
 
 /**
  * The DNS Provider implementation for Microsoft DNS
@@ -59,87 +62,76 @@ class MicrosoftDnsProvider implements DNSProvider {
      * Creates a manually allocated DNS Record of the specified record type on the passed {@link NetworkDomainRecord} object.
      * This is typically called outside of automation and is a manual method for administration purposes.
      * @param integration The DNS Integration record which contains things like connectivity info to the DNS Provider
-     * @param record The domain record that is being requested for creation. All the metadata needed to create teh record
-     *               should exist here.
+     * @param record The domain record that is being requested for creation. All the metadata needed to create the record
+     * should exist here.
      * @param opts any additional options that may be used in the future to configure behavior. Currently unused
      * @return a ServiceResponse with the success/error state of the create operation as well as the modified record.
      */
     @Override
     ServiceResponse createRecord(AccountIntegration integration, NetworkDomainRecord record, Map opts) {
-        log.info("Creating DNS Record via Microsoft DNS...")
+
+        log.debug("createRecord - Request record: ${record.getProperties()}")
+        log.debug("createRecord - Request opts: ${opts}")
 
         def createPtrRecord = false
-        def fqdn = record.fqdn
-        def domainName
-        def computerName
-        try {
-            def recordType = record.type
-            def recordData = record.content
-            def command
-            if(!fqdn?.endsWith('.')) {
-                fqdn = fqdn + '.'
-            }
-            domainName = record.networkDomain.name
-            computerName = integration.servicePath
-            createPtrRecord = (integration.serviceFlag == null || integration.serviceFlag)
-            if(recordType == 'CNAME') {
-                command = "Add-DnsServerResourceRecordCName -Name \"${fqdn}\" -HostNameAlias \"${recordData}\" -ZoneName \"${domainName}\""
-            } else {
-                if(createPtrRecord) {
-                    command = "Add-DnsServerResourceRecordA -Name \"${fqdn}\" -ZoneName \"${domainName}\" -AllowUpdateAny -IPv4Address \"${recordData}\" -CreatePtr -TimeToLive 01:00:00"
+        String rrType = record.type.trim().toUpperCase()
+        log.info("createRecord: Request to create resource record type: ${rrType} via Dns integration ${integration.name}")
 
-                } else {
-                    command = "Add-DnsServerResourceRecordA -Name \"${fqdn}\" -ZoneName \"${domainName}\" -AllowUpdateAny -IPv4Address \"${recordData}\" -TimeToLive 01:00:00"
+        // Check if the record type is supported by this plugin
+        if (supportedRrType(rrType)) {
+            //record type is supported go ahead and add
+            try {
+                String recordData = record.content  // Content - IpAddress or alias depends on rrType
+                String zone = record.networkDomain.name // zone where record is to be added
+                String name = getNQDN(record.name,zone) // non qualified host name - will create record based on this
+                String computerName = integration.servicePath // DnsServer if going via a service box
+                // Create PTR at same time as A record if possible
+                createPtrRecord = (integration.serviceFlag == null || integration.serviceFlag)
+                Integer ttl = record.ttl ?: 3600
+                
+                String command = buildAddDnsServerRecordScript(rrType,name,zone,recordData,ttl,createPtrRecord,computerName)
+                def commandOpts = getRpcConfig(integration, computerName)
+                def results = executeCommand(command, commandOpts)
+                log.debug("createRecord - executeCommand TaskResult: ${results.dump()}")
+                def rpcData = handleTaskResult(results)
+                if (!rpcData) {
+                    log.error("createRecord - integration ${integration.name} - Unable to determine rpcData from Dns Services")  
+                    rtn.error("Unable to determine rpcData from Dns Services")
+                    return new ServiceResponse<NetworkDomainRecord>(false,"Unable to determine rpcData from Dns Services",null,record)
                 }
-            }
-            if(computerName) {
-                command += " -ComputerName ${computerName}"
-            }
-            def commandOpts = getRpcConfig(integration, computerName)
-            def results = executeCommand(command, commandOpts)
-            log.debug("add dns results: ${results.dump()}")
-
-            if(results.success){
-                return new ServiceResponse<NetworkDomainRecord>(true,null,null,record)
-            } else {
-                log.info("Record may already exist for ${record.name}...Checking if it does")
-                //record may exist already...lets find out
-                String recordName = record.name
-                if(recordName.endsWith(".${domainName}")) {
-                    recordName = recordName.substring(0,recordName.indexOf(".${domainName}"))
-                }
-                command = "Get-DnsServerResourceRecord -Name \"${recordName}\" -ZoneName \"${domainName}\" -RRType A"
-                if(computerName) {
-                    command += " -ComputerName ${computerName}"
-                }
-                results = executeCommand(command, commandOpts)
-                log.info("Check Record Results: ${results.dump()}")
-                if(results.success) {
-
-                    //record already exists so just add ptr
-                    if(createPtrRecord) {
-                        def reverseIpArgs = recordData.tokenize('.').reverse()
-                        def reverseIpName = reverseIpArgs[0]
-                        reverseIpArgs[0] = '0'
-                        def ptrName = "${reverseIpArgs.join('.')}.in-addr.arpa".toString()
-                        command ="Add-DnsServerResourceRecordPtr -Name \"${reverseIpName}\" -ZoneName \"${ptrName}\" -AllowUpdateAny -TimeToLive 01:00:00 -AgeRecord -PtrDomainName \"${fqdn}\""
-                        if(computerName) {
-                            command ="Add-DnsServerResourceRecordPtr -ComputerName ${computerName} -Name \"${reverseIpName}\" -ZoneName \"${ptrName}\" -AllowUpdateAny -TimeToLive 01:00:00 -AgeRecord -PtrDomainName \"${fqdn}\""
-                        }
-                        def ptrResults = executeCommand(command, commandOpts)
-                        log.info("Pointer Record Creation Attempt: ${ptrResults.dump()}")
-                        return new ServiceResponse<NetworkDomainRecord>(true,null,null,record)
-
+                if (rpcData.status == 0 ) {
+                    //Rpc Process successful and response should be confirmation record was added. Use this to update the record
+                    def getDnsRecords = parseListSet(rpcData.cmdOut)
+                    log.debug("createRecord - Rpc Process returned matching newDnsRecords : ${getDnsRecords}")
+                    //Could be multiple matching records - only take the one we added
+                    def newDnsRecord = getDnsRecords.find {(it.RecordData.startsWithIgnoreCase(recordData))}
+                    if (newDnsRecord) {
+                        // update name and recordData from confirmed response - Note the Map returned by parseListSet is Pascal Case not the standard
+                        name = newDnsRecord.HostName
+                        recordData = newDnsRecord.RecordData
+                        record.name = name
+                        record.internalId = recordData
+                        record.externalId = newDnsRecord.DistinguishedName
+                        record.content = recordData
+                        record.recordData = recordData
+                        log.info("createRecord - integration ${integration.name} - Successfully created ${rrType} record - host: ${name}, zone: ${zone}, data: ${recordData}")
+                        return new ServiceResponse<NetworkDomainRecord>(true,"Successfully created ${rrType} record ${record.name} in zone ${zone} data ${recordData}",null,record)
+                    } else {
+                        log.warn("createRecord - integration ${integration.name} - Failed to confirm Resource Record was created as requested")
+                        return new ServiceResponse<NetworkDomainRecord>(false,"Failed to confirm Resource Record was created as Requested",null,record)                        
                     }
                 } else {
-                    log.error("An error occurred trying to create a dns record {} via {}: Exit {}: {}",fqdn,integration.name, results.exitCode,results.error ?: results.output)
+                    log.warn("createRecord - integration ${integration.name} - Failed to create Resource Record ${rpcData}")
+                    return new ServiceResponse<NetworkDomainRecord>(false,rpcData.errOut.message,null,record)
                 }
-                return new ServiceResponse<NetworkDomainRecord>(false,"Error Creating DNS Record ${results.error}",null,record)
+            } 
+            catch(e) {
+                log.error("createRecord - integration ${integration.name} error: ${e}", e)
             }
-        } catch(e) {
-            log.error("createRecord error: ${e}", e)
-        }
-        return ServiceResponse.error("Unknown Error Occurred Creating Microsoft DNS Record",null,record)
+        } else {
+            log.error("Adding Resource Record type ${record.type} not supported by this Plugin")
+            return new ServiceResponse<NetworkDomainRecord>(false,"Adding Resource Record type ${record.type} not supported by this Plugin",null,record)
+        } 
     }
 
     /**
@@ -153,37 +145,37 @@ class MicrosoftDnsProvider implements DNSProvider {
      */
     @Override
     ServiceResponse deleteRecord(AccountIntegration integration, NetworkDomainRecord record, Map opts) {
-        try {
-                String recordType = record.type
-                String fqdn = record.fqdn
-                if(!fqdn.endsWith('.')) {
-                    fqdn = fqdn + '.'
-                }
-                String recordData = record.recordData
-                String domainName = record.networkDomain.name
-                String command
-                String computerName = integration.servicePath
-                if(recordType == 'CNAME') {
-                    command = "Remove-DnsServerResourceRecord -Force -ZoneName \"${domainName}\" -RRType \"CNAME\" -Name \"${fqdn}\" -RecordData \"${recordData}\""
-                } else if(recordType == 'PTR'){
-                    command = "Remove-DnsServerResourceRecord -Force -ZoneName \"${domainName}\" -RRType \"PTR\" -Name \"${fqdn}\" -RecordData \"${recordData}\""
-                } else {
-                    command = "Remove-DnsServerResourceRecord -Force -ZoneName \"${domainName}\" -RRType \"A\" -Name \"${fqdn}\" -RecordData \"${recordData}\""
-                }
-                if(computerName) {
-                    command += " -ComputerName ${computerName}"
-                }
-                def commandOpts = getRpcConfig(integration, computerName)
-                def results = executeCommand(command, commandOpts)
-                if(results.success) {
-                    return ServiceResponse.success()
-                } else {
-                    return ServiceResponse.error("Error removing Microsoft DNS Record ${record.name} - ${results.error}")
-                }
-        } catch(e) {
-            log.error("deleteRecord error: ${e}", e)
-            return ServiceResponse.error("System Error removing Microsoft DNS Record ${record.name} - ${e.message}")
 
+        log.debug("deleteRecord - Request record: ${record.getProperties()}")
+        log.debug("deleteRecord - Request opts: ${opts}")
+    
+        try {
+            String rrType = record.type
+            String fqdn = record.fqdn
+            String name = record.name
+            String recordData = record.recordData
+            String zone = record.networkDomain.name
+            String computerName = integration.servicePath
+
+            String command = buildRemoveDnsServerRecordScript(rrType,name,zone,recordData,computerName)
+            def commandOpts = getRpcConfig(integration, computerName)
+            def results = executeCommand(command, commandOpts)
+            def rpcData = handleTaskResult(results)
+            if (!rpcData) {
+                log.error("deleteRecord - integration: ${integration.name} - Unable to determine rpcData from Dns Services")
+                return new ServiceResponse<NetworkDomainRecord>(false,"Unable to determine rpcData returned from Dns Services",null,record)
+            }
+            if (rpcData.status == 0 ) {
+                log.info("deleteRecord - integration: ${integration.name} - Successfully removed ${rrType} record - host: ${name}, zone: ${zone}, data: ${recordData}")
+                return new ServiceResponse<NetworkDomainRecord>(true,"Successfully removed ${rrType} record ${name} zone ${zone} data ${recordData}",null,record)
+            } else {
+                log.warn("deleteRecord - integration: ${integration.name} - Failed to delete Resource Record ${rpcData}")
+                return new ServiceResponse<NetworkDomainRecord>(false,rpcData.errOut.message,null,record)
+            }            
+        } 
+        catch(e) {
+            log.error("deleteRecord - integration: ${integration.name} error: ${e}", e)
+            return ServiceResponse.error("System Error removing Microsoft DNS Record ${record.name} - ${e.message}")
         }
     }
 
@@ -199,20 +191,20 @@ class MicrosoftDnsProvider implements DNSProvider {
         try {
             def rpcConfig = getRpcConfig(integration)
             def hostOnline = ConnectionUtils.testHostConnectivity(rpcConfig.host, rpcConfig.port ?: 5985, false, true, null)
-            log.debug("online: {} - {}", rpcConfig.host, hostOnline)
-            def testResults
-            // Promise
+            log.info("refresh - integration ${integration.name} - checking the integration is online - ${rpcConfig.host} - ${hostOnline}") 
+            
             if(hostOnline) {
                 Date now = new Date()
                 cacheZones(integration)
                 cacheZoneRecords(integration)
-                log.info("Sync Completed in ${new Date().time - now.time}ms")
+                log.info("refresh - integration: ${integration.name} - Sync Completed in ${new Date().time - now.time}ms")
                 morpheus.integration.updateAccountIntegrationStatus(integration, AccountIntegration.Status.ok).subscribe().dispose()
             } else {
-                morpheus.integration.updateAccountIntegrationStatus(integration, AccountIntegration.Status.error, 'Microsoft DNS not reachable')
+                log.warn("refresh - integration: ${integration.name} - Integration appears to be offline")
+                morpheus.integration.updateAccountIntegrationStatus(integration, AccountIntegration.Status.error, "Microsoft DNS integration ${integration.name} not reachable")
             }
         } catch(e) {
-            log.error("refresh Microsoft DNS error: ${e}", e)
+            log.error("refresh - Microsoft DNS error on integration ${integration.name}: ${e}")
         }
     }
 
@@ -228,13 +220,19 @@ class MicrosoftDnsProvider implements DNSProvider {
      */
     @Override
     ServiceResponse verifyAccountIntegration(AccountIntegration integration, Map opts) {
+
+        ServiceResponse rtn = new ServiceResponse()
+        TaskResult result
+        String computerName
+        String command
+
+        // config.zoneFilter is the glob style filter for importing zones
+        def config = integration.getConfigMap()
+
         try {
-            ServiceResponse rtn = new ServiceResponse()
-            def computerName = integration.servicePath
-            def command = "Get-DnsServerSetting"
-            if(computerName) {
-                command = "Get-DnsServerSetting -ComputerName ${computerName}"
-            }
+
+            log.info("verifyAccountIntegration - integration : ${integration.dump()}")
+            // Validate Form options
             rtn.errors = [:]
             if(!integration.name || integration.name == ''){
                 rtn.errors['name'] = 'name is required'
@@ -248,25 +246,50 @@ class MicrosoftDnsProvider implements DNSProvider {
             if((!integration.serviceUsername || integration.serviceUsername == '') && (!integration.credentialData?.username || integration.credentialData?.username == '')){
                 rtn.errors['serviceUsername'] = 'username is required'
             }
-            if(rtn.errors.size() > 0){
+            if (config.zoneFilter) {
+                def zoneFilters = config.zoneFilter.tokenize(",").each {
+                    if (!makeZoneFilterRegex(it)) {
+                        rtn.errors['zoneFilter'] = "Invalid Zone Filter. Use comma separated list of zones to import in this format: *.mydomain.com, *.10.in-addr.arpa"
+                    }
+                }
+            }
+
+            // Check Connectivity to serviceUrl over WinRM
+            if (integration.serviceUrl) {
+                def serviceHostOnline = ConnectionUtils.testHostConnectivity(integration.serviceUrl, 5985, false, true, null)
+                if (!serviceHostOnline) {
+                    rtn.errors['serviceUrl'] = 'DNS Server not reachable over WinRM (port 5985)'
+                } else {
+                    // If serviceUrl is a management server, then servicePath is the actual DNS Server  (-ComputerName parameter)
+                    computerName = integration.servicePath
+                    // Check for Management Access
+                    command = buildTestDnsServerScript(computerName)
+                    def commandOpts = getRpcConfig(integration,computerName)
+                    // Test the credentials can access the DNS Services
+                    result = executeCommand(command, commandOpts)
+                    def rpcData = handleTaskResult(result)
+                    if (rpcData?.status > 0) {
+                        log.error("verifyAccountIntegration - Cannot access MicrosoftDns rpc Services ${rpcData.errOut}")
+                        rtn.errors['serviceUrl'] = 'Cannot access DNS Services with the Credentials provided'
+                    }
+                }   
+            }
+            if(rtn.errors.size() > 0) {
+                //Report Validation errors
+                log.error("Microsoft DNS Integration Form validation errors while Adding Integration: ${rtn.errors}")
                 rtn.success = false
                 return rtn
             }
+            log.info("DNS Services validated OK - result : ${result.toMap()}")
+            return ServiceResponse.success("DNS Integration validated OK")
 
-            def commandOpts = getRpcConfig(integration,computerName)
-            def results = executeCommand(command, commandOpts)
-            log.info("validate dns results: ${results}")
-            if(!results.success) {
-                return ServiceResponse.error('dns services not found on host')
-            } else {
-                return ServiceResponse.success()
-            }
         } catch(e) {
             log.error("validateService error: ${e}", e)
             return ServiceResponse.error(e.message ?: 'unknown error validating dns service')
         }
     }
-// Cache Zones methods
+
+     // Cache Zones methods
     def cacheZones(AccountIntegration integration, Map opts = [:]) {
         try {
             def listResults = listZones(integration)
@@ -295,11 +318,11 @@ class MicrosoftDnsProvider implements DNSProvider {
         } catch (e) {
             log.error("cacheZones error: ${e}", e)
         }
-    }
+    }   
 
     /**
      * Creates a mapping for networkDomainService.createSyncedNetworkDomain() method on the network context.
-     * @param poolServer
+     * @param integration
      * @param addList
      */
     void addMissingZones(AccountIntegration integration, Collection addList) {
@@ -311,18 +334,20 @@ class MicrosoftDnsProvider implements DNSProvider {
             networkDomain.refSource = 'integration'
             networkDomain.zoneType = 'Authoritative'
             networkDomain.publicZone = true
+            log.info("Adding Zone: ${networkDomain}")
             return networkDomain
         }
         morpheus.network.domain.create(integration.id, missingZonesList).blockingGet()
     }
 
     /**
-     * Given a pool server and updateList, extract externalId's and names to match on and update NetworkDomains.
-     * @param poolServer
-     * @param addList
+     * Given an AccountIntegration (integration) and updateList, update NetwordDomain zone records
+     * @param integration
+     * @param updateList
      */
     void updateMatchedZones(AccountIntegration integration, List<SyncTask.UpdateItem<NetworkDomain,Map>> updateList) {
         def domainsToUpdate = []
+        log.info("updateMatchedZones -  update Zones for ${integration.name} - updated items ${updateList.size()}")
         for(SyncTask.UpdateItem<NetworkDomain,Map> update in updateList) {
             NetworkDomain existingItem = update.existingItem as NetworkDomain
             if(existingItem) {
@@ -340,6 +365,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                 }
 
                 if(save) {
+                    log.info("updateMatchedZones -  ready to update item ${existingItem}")
                     domainsToUpdate.add(existingItem)
                 }
             }
@@ -353,13 +379,11 @@ class MicrosoftDnsProvider implements DNSProvider {
     // Cache Zones methods
     def cacheZoneRecords(AccountIntegration integration, Map opts=[:]) {
 
-
-
-        morpheus.network.domain.listIdentityProjections(integration.id).buffer(50).flatMap { Collection<NetworkDomainIdentityProjection> poolIdents ->
-            return morpheus.network.domain.listById(poolIdents.collect{it.id})
+        morpheus.network.domain.listIdentityProjections(integration.id).buffer(50).flatMap { Collection<NetworkDomainIdentityProjection> resourceIdents ->
+            return morpheus.network.domain.listById(resourceIdents.collect{it.id})
         }.flatMap { NetworkDomain domain ->
             def listResults = listRecords(integration,domain)
-
+            log.debug("cacheZoneRecords - domain: ${domain.externalId}, listResults: ${listResults}")
 
             if (listResults.success) {
                 List<Map> apiItems = listResults.recordList as List<Map>
@@ -388,6 +412,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                     updateMatchedDomainRecords(updateItems)
                 }.observe()
             } else {
+                log.info("cacheZoneRecords - No data to sync for ${domain.externalId}")
                 return Single.just(false)
             }
         }.doOnError{ e ->
@@ -446,7 +471,6 @@ class MicrosoftDnsProvider implements DNSProvider {
         morpheus.network.domain.record.create(domain,records).blockingGet()
     }
 
-
     /**
      * Provide custom configuration options when creating a new {@link AccountIntegration}
      * @return a List of OptionType
@@ -464,7 +488,8 @@ class MicrosoftDnsProvider implements DNSProvider {
                         placeHolder:null, helpBlock:'', defaultValue:null, custom:false, displayOrder:75),
                 new OptionType(code:'accountIntegration.microsoft.dns.serviceFlag', inputType: OptionType.InputType.CHECKBOX, name:'serviceFlag', category:'accountIntegration.microsoft.dns',
                         fieldName:'serviceFlag', fieldCode: 'gomorpheus.label.dnsPointerCreate', fieldLabel:'Create Pointers', fieldContext:'domain', required:false, enabled:true, editable:true, global:false,
-                        placeHolder:null, helpBlock:'', defaultValue:'on', custom:false, displayOrder:80)
+                        placeHolder:null, helpBlock:'', defaultValue:'on', custom:false, displayOrder:80),
+                new OptionType(code: 'accountIntegration.microsoft.dns.zoneFilter', name: 'Zone Filter', inputType: OptionType.InputType.TEXT, fieldName: 'zoneFilter', fieldLabel: 'Zone Filter', required: false, displayOrder: 70)                              
         ]
     }
 
@@ -518,26 +543,47 @@ class MicrosoftDnsProvider implements DNSProvider {
         return "Microsoft DNS"
     }
 
-
-
     private listZones(AccountIntegration integration) {
         def rtn = [success:false, zoneList:[]]
+
+        def zoneFilters //holds an array of RegEx patterns. Zones matching any filter will be imported
+        def config = integration.getConfigMap()
+        zoneFilters = config.zoneFilter ? config.zoneFilter.tokenize(",").collect {makeZoneFilterRegex(it)} : null 
+        
         try {
             def computerName = integration.servicePath
-            def command = 'Get-DnsServerZone | Format-List | Out-String -width 512'
-            if(computerName) {
-                command = "Get-DnsServerZone -ComputerName ${computerName} | Format-List | Out-String -width 512"
-            }
+            def command = buildGetDnsZoneScript(computerName)
             def commandOpts = getRpcConfig(integration, computerName)
             def results = executeCommand(command, commandOpts)
-            log.debug("results.data: ${results.data}")
-            if(results.success) {
-                rtn.success = true
-                def zoneRecords = parseListSet(results.data)
-                rtn.zoneList = zoneRecords
+            def rpcData = handleTaskResult(results)
+            def importZone
+
+            if (rpcData?.status == 0) {
+                log.debug("listZones - integration ${integration.name} - rpcData: ${rpcData}")
+                def zoneRecords = parseListSet(rpcData.cmdOut)
+                if (zoneFilters) {
+                    log.info("listZones - integration ${integration.name} - Applying glob style zone filters : ${config.zoneFilter} regEx: ${zoneFilters}")
+                    def filteredZoneRecords = zoneRecords.collect {zone -> 
+                        // Does this zone name match any of the import zoneFilters
+                        if (zoneFilters.find {(zone.ZoneName ==~ it)}) {
+                            log.info("listZones - integration ${integration.name} - found matching zone: {$zone.ZoneName}")
+                            return zone
+                        } else {
+                            log.warn("listZones - integration ${integration.name} - Skipping non-matching zone: {$zone.ZoneName}")
+                        }                      
+                    }.findAll()                
+                    rtn.zoneList = filteredZoneRecords
+                    rtn.success = true
+                } else {
+                    log.info("listZones - integration ${integration.name} - No Zone filter - importing all zones")
+                    rtn.zoneList = zoneRecords
+                    rtn.success = true
+                }
+            } else {
+                log.error("listZones - integration ${integration.name} - Failed to get Dns Zone list status: ${rpcData.status} - details ${rpcData.errOut}")
             }
         } catch(e) {
-            log.error("listZones error: ${e}", e)
+            log.error("listZones  - integration ${integration.name} raised exception error: ${e.getMessage()}")
         }
         return rtn
     }
@@ -545,31 +591,63 @@ class MicrosoftDnsProvider implements DNSProvider {
     private listRecords(AccountIntegration integration, NetworkDomain domain) {
         def rtn = [success:false, recordList:[]]
         try {
+            log.info("listRecords - integration ${integration.name} - importing zone ${domain.externalId}")
             def computerName = integration.servicePath
-            def command = 'Get-DnsServerResourceRecord -ZoneName "' + domain.externalId + '" | Format-List | Out-String -width 512'
-            if(computerName) {
-                command = "Get-DnsServerResourceRecord -ComputerName ${computerName}" + ' -ZoneName "' + domain.externalId + '" | Format-List | Out-String -width 512'
-            }
-
+            def command = buildGetDnsResourceRecordScript(domain.externalId,computerName)
             def commandOpts = getRpcConfig(integration, computerName)
             def results = executeCommand(command, commandOpts)
-            log.debug("results.data: ${results.data}")
-            if(results.success) {
+            def rpcData = handleTaskResult(results)
+            if (rpcData?.status == 0) {
                 rtn.success = true
-                def zoneRecords = parseListSet(results.data)
+                def zoneRecords = parseListSet(rpcData.cmdOut)
                 rtn.recordList = zoneRecords
+                log.info("listRecords - integration ${integration.name} - zone: ${domain.externalId} resourceRecords: ${zoneRecords.size()}")
+            }
+            else {
+                log.error("listRecords - integration ${integration.name} - zone: ${domain.externalId} - status: ${rpcData.status} - details: ${rpcData.errOut}")
             }
         } catch(e) {
-            log.error("listRecords error: ${e}", e)
+            log.error("listRecords - integration ${integration.name} raised error: ${e.getMessage()}")
         }
         return rtn
     }
 
+    /**
+     * execute command string over the RPC process
+     * @param command
+     * @param opts 
+     */
     TaskResult executeCommand(String command, Map opts) {
         def winrmPort = opts.port && opts.port != 22 ? opts.port : 5985
-        def results = morpheusContext.executeWindowsCommand(opts.host,winrmPort,opts.username,opts.password,command,true,opts.elevated ? true: false).blockingGet()
-        log.debug("msdns command results for command {}: {}",command,results)
-        return results
+
+        def dns = [:]
+        TaskResult result
+        log.debug("executeCommand - command: ${command}")
+        log.debug("executeCommand - Using command parameter opts: ${opts}")
+
+        try {
+            result = morpheusContext.executeWindowsCommand(opts.host,winrmPort,opts.username,opts.password,command,true,opts.elevated ? true: false).blockingGet()
+            log.debug("executeCommand TaskResult ${result.toMap()}")
+            // Check for any Microsoft DNS service error codes
+            if (result.success) {
+                log.info("executeCommand - Microsoft DNS Rpc process on host ${opts.host} completed successfully. Process exitCode ${result.exitCode}")
+                result.msg = "Remote Process completed successfully"
+            } else {
+                //Did the remote process actually connect - check exitCode: null indicates failed to establish a connection 
+                if (result.exitCode) {
+                    log.warn("executeCommand - Remote Process on host ${opts.host} returned exitCode ${result.exitCode}")
+                    result.error = "Remote Process returned a non-zero exit code ${result.exitCode}"
+                } else {
+                    result.error = "Remote Process failed to connect to host with the credentials supplied"
+                    log.error("executeCommand - Rpc process failed to host ${opts.host} with the credentials supplied ${opts.username}")
+                }
+            }
+        }
+        catch (e) {
+            log.warn("executeCommand - Rpc process raised exception - ${e}")
+            result.error = "executeCommand raised exception ${e.getMessage()}"
+        }
+        return result
     }
 
     /**
@@ -578,9 +656,31 @@ class MicrosoftDnsProvider implements DNSProvider {
      * @param computerName
      */
     private getRpcConfig(AccountIntegration integration, String computerName=null) {
-        def rtn = [host:integration.serviceUrl, username:integration.credentialData?.username ?: integration.serviceUsername, password:integration.credentialData?.password ?: integration.servicePassword, elevated: computerName ? true : false]
+        def credentialService = morpheusContext.getAccountCredential()
+        log.debug("credentialData : ${integration.credentialData}")
+        def rtn = [:]
+        rtn.host = integration.serviceUrl
+        rtn.username = integration.credentialData?.username ?: integration.serviceUsername
+        rtn.password = integration.credentialData?.password ?: integration.servicePassword
+        //rtn.elevated = computerName ? true : false
+        rtn.elevated = false // never use the JRuby if possible
+        log.debug("getRpcInfo : ${rtn}")
+        return rtn
     }
 
+    /**
+     * Parse a list of strings from Powershell Format-List cmdlet. Output will be a stream of Key : Value pairs 
+     * delimited by newline. Repeating key name signals a new instance of the object
+     * rtn is a List of Map objects
+     * 
+     * Note that key names are Pascal Case as per the Microsoft Powershell standards.
+     * Keys returned are dependant on the Powershell XML Formatters and could change in the future
+     * for Dns Resource records these are the current key names
+     
+     * [DistinguishedName: ,HostName: ,RecordType: ,Type: ,RecordClass: ,TimeToLive: ,TimeStamp: ,RecordData: ]
+     *
+     * @param data 
+     */
     private static parseListSet(data) {
         def rtn = []
         def lines = data.tokenize('\n')
@@ -637,4 +737,274 @@ class MicrosoftDnsProvider implements DNSProvider {
             return 0
         }
     }
+
+    /**
+    * TaskResult exitCode is not always set by the rpc service to the DNS Cmdlet error code
+    * In this implementation, the Microsoft DNS Error Code (non zero) if raised will be returned as part
+    * of a json string in the TaskResult data property
+    * 
+    * taskResult.data = {
+    *   "status":<Integer Microsoft Code or 0>, 
+    *   "cmdOut": "<success cmdlet output>" , 
+    *   "errOut": {error object containing more details including Microsoft root cause message OR string containing generic error}
+    * }
+    *
+    * Common Microsoft DNS Error codes are:
+    *
+    * 9711 DNS fwd record already exists
+    * 9714 DNS Record does not exist
+    * 9715 Could not create PTR Record (raise when -CreatePtr is added and a record already exists)
+    * 9601 DNS zone does not exist.
+    * 9563 The record could not be created because this part of the DNS namespace has been delegated to another server
+    * 1722 The server is not a DNS Server - the rpc server is unavailable
+    */
+    private handleTaskResult(TaskResult result) {
+
+        def jsonSlurper = new JsonSlurper()
+        def rpcData = [:]
+        
+        // Inspect TaskResult data property for a valid response from the Rpc process
+        if (result?.data) {
+            try {
+                rpcData = jsonSlurper.parseText(result.data)
+                log.debug("handleTaskResult - MicrosoftDns Rpc result Status ${rpcData}")
+            }
+            catch (e) {
+                log.warn("handleTaskResult - Unable to process MicrosoftDns return json. TaskResult exitCode: ${result.exitCode} - exception ${e}")
+                rpcData.status = 1
+                rpcData.errOut = "Unable to interpret the Rpc json response ${e.getMessage()}"
+            }
+        } else {
+            log.error("handleTaskResult - MicrosoftDns Rpc result returned no usable data. TaskResult exitCode: ${result.exitCode}")
+            rpcData.status = 1
+            rpcData.errOut = "Failed to connect to Remote Service with the credentials provided"
+        }        
+        return rpcData
+    }
+
+    /**
+    * Validates the Resource Record types that can be added or deleted by this plugin 
+    */
+    private Boolean supportedRrType(String rrType) {
+        if (rrType) {
+            def validTypes = ["A","PTR","CNAME"]
+            def matchingType = validTypes.findAll {it == rrType.trim().toUpperCase()}
+            return (matchingType != [])
+        } else {
+            return false
+        }
+    }
+
+
+    /**
+    * Given a hostName and zoneName, retrun a valid Non-Qualified hostname
+    * with the zoneName removed
+    */
+    private String getNQDN(String hostName, String zoneName) {
+         
+        String nqdn = hostName
+        if (zoneName) {
+            String zone =  "." + zoneName
+            if (hostName.endsWithIgnoreCase(zone)) {
+                nqdn = hostName.dropRight(zone.size())
+            }
+        }
+        return nqdn
+    }
+
+    /**
+    * Construct a regex from a Glob style filter for Zone names
+    *
+    * eg 
+    *    *.morpheusdata.com for all zones in morpheusdata.com
+    *    test*.mydomain.net for all zones beginning test in mydomain.net
+    */
+    private makeZoneFilterRegex(String globFilter) {
+
+        Pattern globPattern  = Pattern.compile('[a-zA-Z0-9-_\\*\\.]*')
+        globFilter = globFilter.trim()
+        if (globFilter ==~ globPattern) {
+            //escape the dots (.) then replace astrix (*)
+            def regexFilter = globFilter.replace('.', '\\.').replace('*','[a-zA-Z0-9_-]*')
+            // Try compile a regex
+            try {
+                return Pattern.compile(regexFilter)
+            }
+            catch (ex) {
+                log.error("makeZoneFilterRegex: Invalid regex pattern ${regexFilter} derived from zone filter ${zoneFilter}")
+                return null
+            }
+        } else {
+            log.error("makeZoneFilterRegex: Invalid glob pattern for ${globFilter}")
+            return null
+        }
+    }
+
+
+    /**
+    * Powershell ScriptBlock for Adding a Dns Resource record
+    * Specify the Resource Record to be created (rrType). Supported options can be clearly seen in the switch statement
+    * The ScriptBlock is executed using InvokeCommand on the local server unless a computerName is supplied
+    *
+    * values surrounded by <% %> are replace by the corresponding parameters before the command string is returned ready for execution
+    */
+    private String buildAddDnsServerRecordScript(String rrType, String name, String zone, String recordData, Integer ttl, Boolean createPtrRecord, String computerName ) {
+
+        def codeBlock = '''
+            $AddScriptBlock = {
+                param($rrType,$name,$zone,$data,$ttl,$createPtr)
+                $TS = New-TimeSpan -seconds $ttl
+                $Ret=[PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null}
+                try {
+                    switch ($rrType) {
+                        "A"     {$Ret.cmdOut=Add-DnsServerResourceRecordA -Name $name -ZoneName $zone -AllowUpdateAny -IPv4Address $data -TimeToLive $TS -CreatePtr:$createPtr -ErrorAction Stop}
+                        "CNAME" {$Ret.CmdOut=Add-DnsServerResourceRecordCName -Name $name -ZoneName $zone -AllowUpdateAny -HostNameAlias $data -TimeToLive $TS -ErrorAction Stop}
+                        "PTR"   {$Ret.CmdOut=Add-DnsServerResourceRecordPTR -Name $name -ZoneName $zone -AllowUpdateAny -PtrDomainName $data -TimeToLive $TS -ErrorAction Stop}
+                        default {$Ret.status=1;$Ret.ErrOut=[PSCustomObject]@{message="Resource Record type $($rrType) not supported by this plugin"}}
+                    }
+                    if($Ret.status -eq 0) {
+                        $Ret.CmdOut = Get-DnsServerResourceRecord -RRType $rrType -Name $name -ZoneName $zone -ErrorAction Stop | Format-List | Out-String -width 512 
+                    }
+                }
+                catch {
+                    $Ret.status = $_.Exception.ErrorData.error_Code
+                    $Ret.errOut = $_.Exception.ErrorData | Select-Object -Property errorSource,message, error_Category,error_Code, error_WindowsErrorMessage
+                }
+                $Ret | Convertto-Json -depth 2 -Compress
+            }
+            $ReturnStatus = Invoke-Command -Scriptblock $AddScriptBlock -ArgumentList "<%type%>","<%name%>","<%zone%>","<%data%>",<%ttl%>,<%createptr%> <%computer%>
+            $ReturnStatus         
+        '''
+
+        computerName = computerName ? "-ComputerName ${computerName}" : ""
+        def createPtr = createPtrRecord ? '$True' : '$False'
+        def ttlString = ttl ? ttl.toString() : "3600"
+        String runCmd = codeBlock.stripIndent().replace("<%type%>",rrType).replace("<%name%>",name).replace("<%zone%>",zone).replace("<%data%>",recordData).replace("<%ttl%>",ttlString).replace("<%createptr%>",createPtr).replace("<%computer%>",computerName)
+        
+        log.debug("buildAddDnsServerRecordScript : ${runCmd}")
+        return runCmd
+    }
+
+   /**
+    * Powershell ScriptBlock for Removing a Dns Resource record
+    * Specify the Resource Record to be Deleted (rrType). Supported options can be clearly seen in the switch statement
+    * The ScriptBlock is executed using InvokeCommand on the local server unless a computerName is supplied
+    *
+    * values surrounded by <% %> are replace by the corresponding parameters before the command string is returned ready for execution
+    */
+    private String buildRemoveDnsServerRecordScript(String rrType, String name, String zone, String recordData, String computerName ) {
+
+        def codeBlock = '''
+            $RemoveScriptBlock = {
+                param($rrType,$name,$zone,$data)
+                $Ret=[PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null}
+                try {
+                    $Ret.cmdOut=Remove-DnsServerResourceRecord -RRType $rrType -Name $name -ZoneName $zone -RecordData $data -Force -ErrorAction Stop
+                }
+                catch {
+                    $Ret.status = $_.Exception.ErrorData.error_Code
+                    $Ret.errOut = $_.Exception.ErrorData | Select-Object -Property errorSource,message, error_Category,error_Code, error_WindowsErrorMessage
+                }
+                $Ret | Convertto-Json -depth 2 -Compress
+            }
+            $ReturnStatus = Invoke-Command -Scriptblock $RemoveScriptBlock -ArgumentList "<%type%>","<%name%>","<%zone%>","<%data%>" <%computer%>
+            $ReturnStatus         
+        '''
+
+        computerName = computerName ? "-ComputerName ${computerName}" : ""
+        String runCmd = codeBlock.stripIndent().replace("<%type%>",rrType).replace("<%name%>",name).replace("<%zone%>",zone).replace("<%data%>",recordData).replace("<%computer%>",computerName)
+        log.debug("buildRemoveDnsServerRecordScript : ${runCmd}")
+        return runCmd
+    }
+
+
+
+   /**
+    * Powershell ScriptBlock for Retrieving DNS Zones
+    * The ScriptBlock is executed using InvokeCommand on the local server unless a computerName is supplied
+    *
+    * values surrounded by <% %> are replace by the corresponding parameters before the command string is returned ready for execution
+    */
+    private String buildGetDnsZoneScript(String computerName) {
+
+        def codeBlock = '''
+            $ScriptBlock = {
+                $Ret=[PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null}
+                try {   
+                    $Ret.cmdOut=Get-DnsServerZone -ErrorAction Stop | Format-List | Out-String -width 512
+                }
+                catch {
+                    $Ret.status = $_.Exception.ErrorData.error_Code
+                    $Ret.errOut=$_.Exception.ErrorData | Select-Object -Property errorSource,message, error_Category,error_Code, error_WindowsErrorMessage
+                }
+                $Ret | Convertto-Json -depth 2 -Compress
+            }
+            $ReturnStatus = Invoke-Command -Scriptblock $ScriptBlock  <%computer%>
+            $ReturnStatus
+        '''    
+        computerName = computerName ? "-ComputerName ${computerName}" : ""
+        String runCmd = codeBlock.stripIndent().replace("<%computer%>",computerName)
+        log.debug("buildGetDnsZoneScript : ${runCmd}")
+        return runCmd
+    }
+
+   /**
+    * Powershell ScriptBlock for Retrieving DNS Zones Records
+    * The ScriptBlock is executed using InvokeCommand on the local server unless a computerName is supplied
+    *
+    * values surrounded by <% %> are replace by the corresponding parameters before the command string is returned ready for execution
+    */
+    private String buildGetDnsResourceRecordScript(String zone, String computerName) {
+
+        def codeBlock = '''
+            $ScriptBlock = {
+                param($zone)
+                $Ret=[PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null}
+                try {   
+                    $Ret.cmdOut=Get-DnsServerResourceRecord -ZoneName $zone -ErrorAction Stop | Format-List | Out-String -width 512
+                }
+                catch {
+                    $Ret.status = $_.Exception.ErrorData.error_Code
+                    $Ret.errOut=$_.Exception.ErrorData | Select-Object -Property errorSource,message, error_Category,error_Code, error_WindowsErrorMessage
+                }
+                $Ret | Convertto-Json -Depth 2 -Compress
+            }
+            $ReturnStatus = Invoke-Command -Scriptblock $ScriptBlock -ArgumentList "<%zone%>" <%computer%>
+            $ReturnStatus
+        '''    
+        computerName = computerName ? "-ComputerName ${computerName}" : ""
+        String runCmd = codeBlock.stripIndent().replace("<%zone%>",zone).replace("<%computer%>",computerName)
+        log.debug("buildGetDnsResourceRecordScript : ${runCmd}")
+        return runCmd
+    }
+
+   /**
+    * Powershell ScriptBlock for Testing the presence or DNS Services
+    * The ScriptBlock is executed using InvokeCommand on the local server unless a computerName is supplied
+    *
+    * values surrounded by <% %> are replace by the corresponding parameters before the command string is returned ready for execution
+    */
+    private String buildTestDnsServerScript(String computerName) {
+
+        def codeBlock = '''
+            $ScriptBlock = {
+                $Ret=[PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null}
+                try {   
+                    $Ret.cmdOut=Get-DnsServerSetting -ErrorAction Stop | Format-List | Out-String -width 512
+                }
+                catch {
+                    $Ret.status = $_.Exception.ErrorData.error_Code
+                    $Ret.errOut=$_.Exception.ErrorData | Select-Object -Property errorSource,message, error_Category,error_Code, error_WindowsErrorMessage
+                }
+                $Ret  | Convertto-Json -Depth 1 -Compress
+            }
+            $ReturnStatus = Invoke-Command -Scriptblock $ScriptBlock <%computer%>
+            $ReturnStatus
+        '''    
+        computerName = computerName ? "-ComputerName ${computerName}" : ""
+        String runCmd = codeBlock.stripIndent().replace("<%computer%>",computerName)
+        log.debug("buildTestDnsServerScript : ${runCmd}")
+        return runCmd
+    }
+ 
 }
