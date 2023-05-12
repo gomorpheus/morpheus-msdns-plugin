@@ -28,17 +28,20 @@ When using a jump server or Intermediate server enter the FQDN or Address of the
 
 ZONE FILTER New to v2.0 of the plugin. A comma separated list of glob style filters which can be used to specify the zones that Morpheus will import and sync. Glob style filter apply to the zone name ONLY and at a domain level. Wildcarding stops at the . (period) 
 
-The * character matches any legal Dns character [a-zA-Z0-9_-] 0 or more times 
+The \* character matches any legal Dns character [a-zA-Z0-9_-] 0 or more times 
 
 An example a filter string of
 
+```
 *.morpheus.com, *.10.in-addr.arpa, d*.us.morpheus.com
-
+```
 would 
 
-IMPORT test.morpheus.com, prod.morpheus.com but NOT mydomain.test.morpheus.com which has a 4th level
-IMPORT 32.10.in-addr.arpa, 33.10.in-addr.arpa but NOT 12.11.in-addr.arpa or 10.in-addr.arpa (which has 3 levels)
-IMPORT denver.us.morpheus.com and delaware.us.morpheus.com but NOT ohio.us.morpheus.com (wildcard at 4th level)
+**IMPORT** test.morpheus.com, prod.morpheus.com but **NOT** mydomain.test.morpheus.com which has a 4th level
+
+**IMPORT** 32.10.in-addr.arpa, 33.10.in-addr.arpa but **NOT** 12.11.in-addr.arpa or 10.in-addr.arpa (which has 3 levels)
+
+**IMPORT** denver.us.morpheus.com and delaware.us.morpheus.com but **NOT** ohio.us.morpheus.com (wildcard at 4th level)
 
 
 ### Validation
