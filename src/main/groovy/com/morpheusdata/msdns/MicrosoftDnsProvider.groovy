@@ -73,21 +73,23 @@ class MicrosoftDnsProvider implements DNSProvider {
         log.debug("createRecord - Request record: ${record.getProperties()}")
         log.debug("createRecord - Request opts: ${opts}")
 
-        def createPtrRecord = false
+        //gather and verify new record data
+        Boolean createPtrRecord = false
         String rrType = record.type.trim().toUpperCase()
+        String recordData = record.content  // Content - IpAddress or alias depends on rrType
+        String zone = record.networkDomain?.name // zone where record is to be added
+        String name = getNQDN(record.name,zone) // non qualified host name - will create record based on this
+        String computerName = integration.servicePath ?: "" // DnsServer if going via a service box
+        // Create PTR at same time as A record if possible
+        createPtrRecord = (integration.serviceFlag == null || integration.serviceFlag)
+        // set a default ttl if null
+        Integer ttl = record.ttl ?: 3600
+
         log.info("createRecord: Request to create resource record type: ${rrType} via Dns integration ${integration.name}")
-        def recordCheck = validateDnsRecord(record)
+        def recordCheck = validateDnsRecord(zone,name,rrType,recordData,ttl)
         if (recordCheck.isValid) {
             //record type is valid and a supported type go ahead and add
-            try {
-                String recordData = record.content  // Content - IpAddress or alias depends on rrType
-                String zone = record.networkDomain.name // zone where record is to be added
-                String name = getNQDN(record.name,zone) // non qualified host name - will create record based on this
-                String computerName = integration.servicePath ?: "" // DnsServer if going via a service box
-                // Create PTR at same time as A record if possible
-                createPtrRecord = (integration.serviceFlag == null || integration.serviceFlag)
-                Integer ttl = record.ttl ?: 3600
-                
+            try {     
                 String command = buildAddDnsServerRecordScript(rrType,name,zone,recordData,ttl,createPtrRecord,computerName)
                 def rpcData = executeCommandScript(integration, command)
                 if (!rpcData) {
@@ -817,39 +819,36 @@ class MicrosoftDnsProvider implements DNSProvider {
      * returns a map with an overall isValid true/false and a map individually tested items and thier validation status
      *  [isValid : true/false, testedItems:[item : valid true or false] ]
      */
-    private validateDnsRecord(NetworkDomainRecord record) {
+    private validateDnsRecord(String domain, String name, String rrType, String recordData, Integer ttl) {
 
         Pattern validHost = Pattern.compile('^[a-zA-Z0-9-_\\.]+$')
         def ret = [isValid:true, testedItems: [:]]
 
-        if (record) {
-            try {
-                ret.testedItems.domain = (record.networkDomain?.name) ? true : false
-            }
-            catch (e) {
-                ret.testedItems.domain = false
-            }
-            try {
-                if (supportedRrType(record.type.trim().toUpperCase())) {
-                    ret.testedItems.type = true
-                    if (record.type.trim().toUpperCase() == "A") {
-                        ret.testedItems.content = NetworkUtility.validateIpAddr(record.content)
-                    } else {
-                        ret.testedItems.content = (record.content ==~ validHost)
-                    }
+        try {
+            ret.testedItems.domain = (domain) ? true : false
+        }
+        catch (e) {
+            ret.testedItems.domain = false
+            log.warn("validateDnsRecord - Network Domain valkidation failed with exception ${e}")
+        }
+        try {
+            if (supportedRrType(rrType)) {
+                ret.testedItems.type = true
+                if (rrType.toUpperCase() == "A") {
+                    ret.testedItems.content = NetworkUtility.validateIpAddr(recordData)
                 } else {
-                    ret.testedItems.type = false
-                }  
-                ret.testedItems.name = (record.name ==~ validHost) 
-                ret.testedItems.ttl = (record.ttl >= 0)
-                ret.isValid = (ret.testedItems.find {it.value == false} == null) 
-            }
-            catch (e) {
-                ret.isValid = false
-                log.warn("validateDnsRecord - NetworkDomainRecord validation failed with exception ${e}")
-            }
-        } else {
+                    ret.testedItems.content = (recordData ==~ validHost)
+                }
+            } else {
+                ret.testedItems.type = false
+            }  
+            ret.testedItems.name = (name ==~ validHost)
+            ret.testedItems.ttl = (ttl >= 0)
+            ret.isValid = (ret.testedItems.find {it.value == false} == null) 
+        }
+        catch (e) {
             ret.isValid = false
+            log.warn("validateDnsRecord - NetworkDomainRecord validation failed with exception ${e}")
         }
         log.info("validateDnsRecord - ${ret}")
         return ret
@@ -940,7 +939,7 @@ class MicrosoftDnsProvider implements DNSProvider {
         $ReturnStatus = Invoke-Command -Scriptblock $exportCredential -ArgumentList "<%username%>","<%password%>"
         $ReturnStatus | ConvertTo-Json -depth 2 -Compress
         '''
-        log.info("buildCacheCredentialScript - Building script to securely cache credentials for ${username} in LOCALAPPDATA:dnsXred.xml")
+        log.info("buildCacheCredentialScript - Building script to securely cache credentials for ${username} in LOCALAPPDATA:dnsCred.xml")
         String runCmd = codeBlock.stripIndent().replace("<%username%>",username).replace("<%password%>",password)
         // Dont debug runCmd as it contains creds
         return runCmd        
@@ -1023,7 +1022,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                 }
                 try {
                     $GetParams = @{Name=$name;ZoneName=$zone;RRType=$rrType}
-                    $AddParams = @{Name=$name;ZoneName=$zone;$RTypeParameterName=$True;TimeToLive=$ttl;$DataPropertyName=$data;AllowUpdateAny=$True}
+                    $AddParams = @{Name=$name;ZoneName=$zone;$RTypeParameterName=$True;TimeToLive=$TS;$DataPropertyName=$data;AllowUpdateAny=$True}
                     if ($SupportsCreatePtr) {$AddParams.Add("CreatePtr",$createPtr)}
                     $Ret.cmdOut = Add-DnsServerResourceRecord @AddParams -ErrorAction Stop
                     if($?) {
