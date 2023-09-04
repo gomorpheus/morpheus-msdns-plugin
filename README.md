@@ -1,4 +1,4 @@
-## Microsoft DNS Morpheus Plugin
+# Microsoft DNS Morpheus Plugin
 
 This is the official Morpheus plugin for interacting with Microsoft DNS. This automates functions as it relates to automatically creating DNS Records and cleaning up DNS records both during workload provisioning and manual. It should be noted that if joining a VM to a Domain, this integration is not needed as the Domain joining typically auto creates a zone record. This was originally embedded into morpheus and is being extracted for easier maintenance
 
@@ -12,25 +12,29 @@ This is a Morpheus plugin that leverages the `morpheus-plugin-core` which can be
 
 A jar will be produced in the `build/lib` folder that can be uploaded into a Morpheus environment.
 
-### Configuring
-
 Once the plugin is loaded in the environment. Microsoft DNS becomes available in `Infrastructure -> Network -> Integrations`.
 
-Configure the Dns Integration via the CREATE MICROSOFT DNS INTEGRATION dialog.
+## New with v2.2.0
 
-Enter a value for the Integration NAME
+- Configure the Dns Integration via the MICROSOFT DNS INTEGRATION dialog. To Add a new integration use Administration -> Integrations  and click + NEW INTEGRATION then select Microsoft DNS from the list.
+- To make changes to an existing integration use Administration -> Integrations then click on the Integration NAME link to access the dialog
 
-If using a jump server or intermediate management server enter the FQDN or Address of this server in the DNS SERVER text box. If not using an intermediary server this should be the FQDN or Address of the DNS Server. In the plugin this option value is known as serviceUrl and must be reachable via WinRm.
+### Microsoft DNS Integration Dialog
 
-Enter the Credentials with access to the Dns Services. Choose stored Credentials or enter Username and Password. Username should be in User Principal Name format
+- NAME - Enter a name for the Integration
+- RPC SERVER -  **NEW** Enter the Name of the server providing access to the Microsoft DNS Services. This is the Server Morpheus will connect to directly. **NOTE** This will also be the DNS Server if accessing the DNS Services directly.
+- CREDENTIALS - Provide account credentials for the integration. You may use credentials already stored in Morpheus or create new Username/Password credentials.
+- ZONE FILTER - Zones matching the zone filter will be imported and managed by the integration. Leave blank to import DNS forward and reverse zones discovered on the DNS Server. See the section below about using Zone Filters.
+- DNS SERVER - If the RPC SERVER is not the server hosting DNS Services then add the FQDN name of the DNS server here. Leave blank if the RPC SERVER is also the DNS Server.
+- CREATE POINTERS -  have DNS create a PTR record when the forward record is created. 
 
-When using a jump server or Intermediate server enter the FQDN or Address of the actual DNS Server in the COMPUTER NAME text box. In the plugin this option value is known as servicePath. The plugin will access the DNS services via this computer
+### Using ZONE FILTERS
 
-ZONE FILTER New to v2.0 of the plugin. A comma separated list of glob style filters which can be used to specify the zones that Morpheus will import and sync. Glob style filter apply to the zone name ONLY and at a domain level. Wildcarding stops at the . (period) 
+ZONE FILTER was introduced in v2.0 of the plugin. The ZONE FILTER is a comma separated list of glob style filters which can be used to specify the zones that Morpheus will import and sync. Glob style filter apply to the zone name ONLY and at a domain level. Wildcarding stops at the . (period)
 
 The \* character matches any legal Dns character [a-zA-Z0-9_-] 0 or more times 
 
-An example a filter string of
+For example a ZONE FILTER string of
 
 ```
 *.morpheus.com, *.10.in-addr.arpa, d*.us.morpheus.com
@@ -44,14 +48,33 @@ would
 **IMPORT** denver.us.morpheus.com and delaware.us.morpheus.com but **NOT** ohio.us.morpheus.com (wildcard at 4th level)
 
 
-### Validation
+### Improved Integration Validation
 
-This plugin includes improvements in error handling and validation. Connectivity and access to DNS Services is tested at the time the integration dialog is saved
+This plugin includes improvements in error handling and validation. Connectivity and access to DNS Services is tested at the time the integration dialog is saved. The Dialog will not save unless validation is passed successfully. The integration dialog will hint where problems occur but you should check the Morpheus Health logs to see detailed messages.
+
+### DNS Record validation and Error Handling
+
+- DNS records are now fully validated before they are created. Only record types A, CNAME and PTR re surrently supported.
+- The integration will return an error if a matching DNS record already exists in DNS. This is **new** behaviour and prevents duplicates being added to Morpheus
+- All error are logged to the Morpheus Health logs
+
+### Morpheus Custom Powershell Functions
+
+A script module containing the Morpheus Powershell functions required by this integration is contained within this plugin and is copied to the RPC Server where it is stored in the Local profile of the integration user account. This makes the integration much more efficient when executing remote Powershell calls from Morpheus. The downloaded script module is md5 checked on each integration refresh to ensure the contents match the plugin copy. 
 
 ### Intermediary Server Support
 
-New with v2.1.0
+This plugin uses a technique where Powershell script blocks are executed using Invoke-Command. 
 
-This plugin uses a technique where Powershell script blocks are executed using Invoke-Command. Using securely cached credentials stored in the user profile on the intemediate server, Invoke-Command can execute script blocks on remote computers (-ComputerName parameter) with specified Credentials (-Credential). Using this method allows for a Kerberos login from the Intermediate Server to the DNS Server overcoming NTLM impersonation restrictions. Credentials are securely cached using Windows DPAPI and can only be access by the computer and user account that cached them.
+Using securely cached credentials stored in the local user profile on the intemediate server, Invoke-Command can execute script blocks on remote computers (-ComputerName parameter) with specified Credentials (-Credential). Using this method allows for a Kerberos login from the Intermediate Server to the DNS Server overcoming NTLM impersonation restrictions. Credentials are securely cached using Windows DPAPI and can only be access by the computer and user account that cached them. When using an intermediate server 2 methods can be employed to connect the DNS Services. Using winRm the script blocks are invoked on the DNS Server using PS Remoting which will require winRm access on the DNS Server. A second technique is to use WMI rpc calls (where the DNS cmdlets specify a -Computername parameter). In this case the service account will require access to the Microsoft DNS WMI namespace on the DNS Server and in most cases the intermediate windows server must be tusted for delegation.
 
-No caching is required if you access the DNS Server directly
+### AWS Directory Services Support
+
+V2.2 support AWS Active Directory service. 
+
+- Access is only possible via a correctly configured intermediate server (RPC SERVER) hosted in AWS and having the DNS Management Tools installed. 
+- The DNS SERVER must be the fully qualified name of one of the AWS Domain controllers.
+- The Service Account should be a member of AWS Delegated Domain Name System Administrators, AWS Delegated Kerberos Delegation Administrators and AWS Delegated Server Administrators (for access to RPC SERVER). 
+- The RPC SERVER computer object should be trusted for delegation for all Kerberos Services on the AWS Directory Service domain controllers. This can be performed using AD Users and Computers to modify the properties of the RPC SERVER Computer object. Right click the computer object, select properties and open the Delegation tab. Select the Radio button **Trust this computer for delegation to any service (Kerberos Only). Click OK to Save
+
+Note it is possible to finely tune the delegation so that the RPC SERVER computer object can only delegate to specific services if this is required.
