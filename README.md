@@ -54,7 +54,7 @@ This plugin includes improvements in error handling and validation. Connectivity
 
 ### DNS Record validation and Error Handling
 
-- DNS records are now fully validated before they are created. Only record types A, CNAME and PTR re surrently supported.
+- DNS records are now fully validated before they are created. Only record types A, CNAME and PTR are currently supported.
 - The integration will return an error if a matching DNS record already exists in DNS. This is **new** behaviour and prevents duplicates being added to Morpheus
 - All error are logged to the Morpheus Health logs
 
