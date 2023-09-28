@@ -238,9 +238,19 @@ Function Test-WinRmServicePath {
         $Computer=$null
     )
     $rtn = [PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null}
-    if ($computer) {
+    if ($Computer) {
+        try {
+            $winRmTest = Test-WSMan -ComputerName $Computer -ErrorAction Stop
+            $rtn.cmdOut = [PSCustomObject]@{productVersion=$winRmTest.ProductVersion}
+        }
+        catch {
+            $rtn.status = 1
+            $rtn.errOut = [PSCustomObject]@{message="Error: No winRm connection to servicePath {0} - exception:  {1}" -F $Computer,$_.Exception.Message}
+            return $rtn
+        }
         $cred = Import-MorpheusCredential
         if ($cred.status -eq 0) {
+            #ScriptBlock
             $sb = {
                 $ret = [PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null}
                 $winId = [System.Security.Principal.WindowsIdentity]::GetCurrent()
@@ -363,25 +373,20 @@ Function Test-MorpheusServicePath {
     )
     $rtn = [PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null}
     if ($Computer) {
-        try {
-            $WinRmTest = Test-WSMan -ComputerName $Computer -ErrorAction Stop
-            $rtn.cmdOut = [PSCustomObject]@{productVersion=$WinRmTest.ProductVersion}
-        }
-        catch {
-            $rtn.status = 1
-            $rtn.errOut = [PSCustomObject]@{message="Error testing winRm to servicePath - exception:  {0}" -F $_.Exception.Message}
-        }
-        if ($rtn.status -eq 0) {
-            $rtn = Test-WinRmServicePath -Computer $Computer
-        } else {
+        #Try WinRm first
+        $rtn = Test-WinRmServicePath -Computer $Computer
+        if ($rtn.status -gt 0) {
+            #Then wmi
             $rtn = Test-WmiServicePath -Computer $Computer
         }
+        $soaServers = Get-AuthoritativeServers -Name $Computer
     } else {
         $rtn = Test-LocalServicePath
+        $soaServers = Get-AuthoritativeServers
     }
-    # Discover Dns Server from Computer
-    $soaServers = Get-AuthoritativeServers -Name $Computer
+    # Discovered DNS servers from SOA record
     $rtn.cmdOut.domainSOAServers = $soaServers.cmdOut
+    # $rtn.cmdOut.serviceType should now be set to winrm, wmi or local 
     $rtn | ConvertTo-Json -Depth 5 -Compress
 }            
 
