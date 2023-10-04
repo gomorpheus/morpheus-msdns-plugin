@@ -393,9 +393,9 @@ class MicrosoftDnsProvider implements DNSProvider {
     // Cache Zones methods
     def cacheZoneRecords(AccountIntegration integration, Map opts=[:]) {
 
-        morpheus.network.domain.listIdentityProjections(integration.id).buffer(50).flatMap { Collection<NetworkDomainIdentityProjection> resourceIdents ->
+        morpheus.network.domain.listIdentityProjections(integration.id).buffer(50).concatMap { Collection<NetworkDomainIdentityProjection> resourceIdents ->
             return morpheus.network.domain.listById(resourceIdents.collect{it.id})
-        }.flatMap { NetworkDomain domain ->
+        }.concatMap { NetworkDomain domain ->
             def listResults = listRecords(integration,domain)
             log.debug("cacheZoneRecords - domain: ${domain.externalId}, listResults: ${listResults}")
 
@@ -404,7 +404,7 @@ class MicrosoftDnsProvider implements DNSProvider {
 
                 //Unfortunately the unique identification matching for msdns requires the full record for now... so we have to load all records...this should be fixed
 
-                Observable<NetworkDomainRecord> domainRecords = morpheus.network.domain.record.listIdentityProjections(domain,null).buffer(50).flatMap {domainIdentities ->
+                Observable<NetworkDomainRecord> domainRecords = morpheus.network.domain.record.listIdentityProjections(domain,null).buffer(50).concatMap {domainIdentities ->
                     morpheus.network.domain.record.listById(domainIdentities.collect{it.id})
                 }
                 SyncTask<NetworkDomainRecord, Map, NetworkDomainRecord> syncTask = new SyncTask<NetworkDomainRecord, Map, NetworkDomainRecord>(domainRecords, apiItems)
@@ -431,7 +431,7 @@ class MicrosoftDnsProvider implements DNSProvider {
             }
         }.doOnError{ e ->
             log.error("cacheZoneRecords error: ${e}", e)
-        }.subscribe()
+        }.blockingSubscribe()
 
     }
 
