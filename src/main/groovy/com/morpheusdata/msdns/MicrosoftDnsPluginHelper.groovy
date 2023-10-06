@@ -40,7 +40,7 @@ class MicrosoftDnsPluginHelper {
     private static String loadResourceString(String resourcePath) {
         
         try {
-            log.info("loadResourceString - loading resource from ${resourcePath}")
+            log.debug("loadResourceString - loading content from ${resourcePath}")
             InputStream inputStream = MicrosoftDnsPluginHelper.class.getClassLoader().getResourceAsStream(resourcePath)
             if (inputStream) {
                 InputStreamReader isReader = new InputStreamReader(inputStream,StandardCharsets.UTF_8)
@@ -65,7 +65,7 @@ class MicrosoftDnsPluginHelper {
 
     public static String morpheusDnsHelperScript() {
         
-        log.info("morpheusDnsHelperScript - Loading Powershell Module via classLoader from ${MicrosoftDnsPluginHelper.getHelperResourceName()}")
+        log.debug("morpheusDnsHelperScript - Loading Powershell Module via classLoader. Resource name: ${MicrosoftDnsPluginHelper.getHelperResourceName()}")
         return MicrosoftDnsPluginHelper.loadResourceString(MicrosoftDnsPluginHelper.getHelperResourceName())
     }
 
@@ -117,6 +117,8 @@ class MicrosoftDnsPluginHelper {
                     $writer.Flush()     
                     $strAsStream.Position = 0
                     $h = (Get-FileHash -InputStream $strAsStream -Algorithm MD5).Hash.ToUpper()
+                    $strAsStream.Close()
+                    $writer.Close()
                     if ($h -eq $chksum) {
                         $rtn.status = 0
                         $i=New-Module -Name "MorpheusDnsHelper" -ScriptBlock ([ScriptBlock]::Create($fc))
@@ -135,7 +137,7 @@ class MicrosoftDnsPluginHelper {
                 $rtn.status = 9
                 $rtn.errOut = [PSCustomObject]@{message="Cannot Find Powershell Helper script {0}" -F $s}
             }
-            $rtn | ConvertTo-Json -Depth 2 -Compress
+            $rtn | ConvertTo-Json -Depth 3 -Compress
         '''
 
         return testScript.stripIndent()
@@ -161,7 +163,7 @@ class MicrosoftDnsPluginHelper {
             }
             # Call the module functions returning the output to variable $rtn
             <%usercode%>
-            # Return results which will be json object
+            # Return results which will be json string
             $rtn
         '''
         log.debug("templateHelperScript - Returning Powershell Snippet to load Helper Script ${fileName}")

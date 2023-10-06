@@ -630,19 +630,8 @@ class MicrosoftDnsProvider implements DNSProvider {
                     helpText: 'Comma separated string of glob style zone names to import. All zones are imported if blank',
                     fieldContext:'config',
                     displayOrder: 70
-                ),
-                // Store the serviceType (local,winrm,wmi) - maintained by the plugin does not require user input
-                new OptionType(
-                    code: 'accountIntegration.microsoft.dns.serviceType', 
-                    name: 'Service Type', 
-                    inputType: OptionType.InputType.HIDDEN, 
-                    fieldName: 'serviceType', 
-                    fieldLabel: 'Service Type', 
-                    required: false,
-                    defaultValue: 'local', 
-                    fieldContext:'config',
-                    displayOrder: 76
-                )                               
+                )
+                // TODO: For future release Store the serviceType (local,winrm,wmi) - Use a HIDDEN Option type                          
         ]
     }
 
@@ -1102,60 +1091,70 @@ class MicrosoftDnsProvider implements DNSProvider {
      */
     ServiceResponse testDnsHelperScript(AccountIntegration integration) {
         String runCmd
-        log.info("testDnsHelperScript - testing user profile LOCALAPPDATA for Morpheus Dns Helper script ...")
+
+        log.debug("testDnsHelperScript - integration ${integration.name} - verifying Morpheus Helper module ${MicrosoftDnsPluginHelper.getHelperFile()} on ${integration.serviceUrl}")
         runCmd = MicrosoftDnsPluginHelper.testHelperFileScript()
         def rtn = executeCommandScript(integration,runCmd)
         if (rtn.status == 9) {
-            // Helper script needs to be transferred as its missing or failed the chksum
-            log.warn("testDnsHelperScript - Attempting to transfer Helper Script to ${integration.serviceUrl}. rtn.errOut: ${rtn.errOut}")
+            // Helper script needs to be transferred as its missing or failed the chksum.
+            log.warn("testDnsHelperScript - integration ${integration.name} - returned errOut: ${rtn.errOut}")
             def xferRtn = transferDnsHelperScript(integration)
             if (xferRtn.status == 0) {
-                log.info("testDnsHelperScript - Successfully transferred Dns Helper Script - re-running tests")
-                //try loading the helper script again?
+                log.info("testDnsHelperScript - integration ${integration.name} - Successfully transferred Dns Helper module - re-running tests")
+                //run the MicrosoftDnsPluginHelper.testHelperFileScript() again to verify script file
                 rtn = executeCommandScript(integration,runCmd)
-            } 
+            }                 
         }
-        // check status
         if (rtn.status == 0) {
-            log.info("testDnsHelperScript - Morpheus Dns Helper Powershell Module successfully loaded on ${integration.serviceUrl} - rtn: ${rtn}")
-            return ServiceResponse.success(rtn,"Morpheus Dns Helper Powershell Module successfully loaded on ${integration.serviceUrl}")
+            log.info("testDnsHelperScript - integration ${integration.name} - DNS Helper Module successfully verified. cmdOut:${rtn.cmdOut} on host ${integration.serviceUrl}")
+            return ServiceResponse.success(rtn,"Morpheus Dns Helper Powershell Module verified on ${integration.serviceUrl}")
         } else {
-            log.error("testDnsHelperScript - Error loading Morpheus Dns Helper script ${rtn}")
+            log.error("testDnsHelperScript - integration ${integration.name} - Error checking Morpheus Dns Helper script rtn: ${rtn}")
             return ServiceResponse.error(rtn.errOut.message)
         }  
     } 
 
-     /**
+    /**
      * This method transfers a Powershell script file containing the Functions needed to support this Integration into the %LOCALAPPDATA
      * path in the Service Account user profile. It helps to overcome the size limitations imposed by the Rpc service
      */       
     private transferDnsHelperScript(AccountIntegration integration) {
         String runCmd
         String contentToXfer = MicrosoftDnsPluginHelper.morpheusDnsHelperScript()
-        log.info("transferDnsHelperScript - Preparing to install helper script in 1k fragments")
+
         def rtn = [status:0,cmdOut:null,errOut:null]
-        def i = 0
-		while(contentToXfer) {
-            log.info("transferDnsHelperScript - transferring support script fragment ${i} ...")
-            def chunk = contentToXfer.take(1024)
-            contentToXfer = contentToXfer.drop(1024)
-            def b64Block = chunk.getBytes("UTF-8").encodeBase64().toString()
-            runCmd = MicrosoftDnsPluginHelper.copyHelperBlockScript(b64Block)
-            rtn = executeCommandScript(integration,runCmd)
-            if(rtn.status != 0) {
-                log.warn("transferDnsHelperScript - Failed to transfer support script - ${rtn.errOut}")
-                break
+        log.info("transferDnsHelperScript - integration ${integration.name} - Preparing to transfer helper script in 1k fragments")
+        try {
+            def i = 0
+            while(contentToXfer) {
+                log.debug("transferDnsHelperScript - integration ${integration.name} - transferring helper script fragment ${i} ...")
+                def chunk = contentToXfer.take(1024)
+                contentToXfer = contentToXfer.drop(1024)
+                def b64Block = chunk.getBytes("UTF-8").encodeBase64().toString()
+                runCmd = MicrosoftDnsPluginHelper.copyHelperBlockScript(b64Block)
+                rtn = executeCommandScript(integration,runCmd)
+                if(rtn.status != 0) {
+                    log.warn("transferDnsHelperScript - integration ${integration.name} - Failed to transfer helper script - ${rtn.errOut}")
+                    break
+                }
+                i = i+1
             }
-            i = i+1
-	    }
+            log.info("transferDnsHelperScript - integration ${integration.name} - Transfer complete")
+        }
+        catch (e) {
+            log.error("transferDnsHelperScript - integration ${integration.name} - Exception ${e.getMessage()}")
+            rtn.status = 1
+            rtn.errOut = "Transfer script raised exception: ${e.getMessage()}"
+        }
         return rtn
     }
 
-     /**
+    /**
      * Tests if the integration can access the DNS Services with the credentials provided either
      * directly (serviceUrl) or via an intermediate server (servicePath).
+     * A lock is used to protect the helper script transfer to the serviceUrl
      * tests comprise these steps
-     *   verify the Morpheus Powershell Helper Module is valid chksum
+     *   verify the Morpheus Powershell Helper Module is installed and has a valid chksum
      *   update cached credentials if using an intermediate server
      *   test access to DNS Services
      * Returns a ServiceResponse
@@ -1169,7 +1168,31 @@ class MicrosoftDnsProvider implements DNSProvider {
         ServiceResponse<AccountIntegration> rtn = new ServiceResponse(true,null,null,integration)
 
         // Verify the Morpheus Dns Powershell Helper module and update if required (based on md5 check) 
-        ServiceResponse testHelper = testDnsHelperScript(integration)
+        // Use a distributedLock to ensure the transfer is exclusive for this serviceUrl
+
+        String lockName = "${getCode()}.helper.${integration.serviceUrl}.${MicrosoftDnsPluginHelper.getHelperFile()}"
+        String lockId
+        ServiceResponse testHelper
+
+        try {
+            // try grabbing a lock
+            log.info("testDnsService - integration: ${integration.name} - Checking Morpheus Helper Powershell script is valid on ${integration.serviceUrl}")
+            log.info("testDnsService - integration: ${integration.name} - attempting to grab lock ${lockName} ...")
+            lockId = morpheusContext.acquireLock(lockName,[ttl:120000L,timeout:60000L]).blockingGet()
+            log.info("testDnsService - integration: ${integration.name} - Acquired lock: ${lockName}, value: ${lockId}")
+            testHelper = testDnsHelperScript(integration)
+        }
+        catch (e) {
+            log.error("testDnsService - integration: ${integration.name} - Unable to verify DNS Helper Script - Possibly locked by another integration.")
+            testHelper = ServiceResponse.error("Unable to verify DNS Helper at this time. Possible locked by another integration")
+        }
+        finally {
+            if (lockId) {
+                log.info("testDnsService - integration: ${integration.name} - Releasing lock: ${lockName}, value: ${lockId}")
+                morpheusContext.releaseLock(lockName,[lock: lockId]).blockingGet()
+            }
+        }
+
         log.debug("testDnsService - integration: ${integration.name} testDnsHelperScript ServiceResponse: ${testHelper}")
         if (!testHelper.success) {
             log.error("testDnsService - integration: ${integration.name} - Failed to transfer Morpheus Powershell Helper - check account Credentials - ${testHelper}")
@@ -1217,7 +1240,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                 // I would like to store it here integration.serviceMode = rpcData.cmdOut?.serviceType
                 setServiceType(integration,rpcData.cmdOut?.serviceType)
                 integration.setConfigProperty('serviceType',getServiceType(integration))
-                log.info("testDnsService - integration: ${integration.name} - serviceUrl: ${integration.serviceUrl}, servicePath: ${integration.servicePath}, serviceType: ${getServiceType(integration)} Dns Services tested OK")
+                log.info("testDnsService - integration: ${integration.name} - serviceUrl: ${integration.serviceUrl}, servicePath: ${integration.servicePath}, serviceType: ${getServiceType(integration)}. Dns Services tested OK")
                 rtn.success = true
                 rtn.msg = "Microsoft Dns Services tested OK"
                 return rtn
@@ -1379,7 +1402,7 @@ class MicrosoftDnsProvider implements DNSProvider {
             .replace("<%computer%>",computer)
             .replace("<%servicetype%>",serviceType)
         runCmd = template.replace("<%usercode%>",userScript)
-        log.info("buildGetDnsZoneScript - Building script to Zone records")
+        log.info("buildGetDnsZoneScript - Building script to get Zone records")
         log.debug("buildGetDnsZoneScript : ${runCmd}")
         return runCmd
     }
