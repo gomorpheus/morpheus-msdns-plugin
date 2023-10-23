@@ -72,7 +72,7 @@ jar {
 				'Morpheus-Logo': 'assets/microsoft.dns.svg',
 				'Morpheus-Logo-Dark': 'assets/microsoft.dns.svg',
 				'Morpheus-Color': '#ffffff',
-				'Morpheus-Labels': 'DNS',
+				'Morpheus-Labels': 'plugin,networking,dns',
 				'Morpheus-Repo': 'https://github.com/gomorpheus/morpheus-msdns-plugin',
 				'Morpheus-Min-Appliance-Version': minversion
 		)
