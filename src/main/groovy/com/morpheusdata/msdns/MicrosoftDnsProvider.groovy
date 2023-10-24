@@ -348,7 +348,7 @@ class MicrosoftDnsProvider implements DNSProvider {
             networkDomain.refSource = 'integration'
             networkDomain.zoneType = 'Authoritative'
             networkDomain.publicZone = true
-            log.info("Adding Zone: ${networkDomain}")
+            log.debug("Adding Zone: ${networkDomain}")
             return networkDomain
         }
         morpheus.network.domain.create(integration.id, missingZonesList).blockingGet()
@@ -361,7 +361,7 @@ class MicrosoftDnsProvider implements DNSProvider {
      */
     void updateMatchedZones(AccountIntegration integration, List<SyncTask.UpdateItem<NetworkDomain,Map>> updateList) {
         def domainsToUpdate = []
-        log.info("updateMatchedZones -  update Zones for ${integration.name} - updated items ${updateList.size()}")
+        log.debug("updateMatchedZones -  update Zones for ${integration.name} - updated items ${updateList.size()}")
         for(SyncTask.UpdateItem<NetworkDomain,Map> update in updateList) {
             NetworkDomain existingItem = update.existingItem as NetworkDomain
             if(existingItem) {
@@ -379,7 +379,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                 }
 
                 if(save) {
-                    log.info("updateMatchedZones -  ready to update item ${existingItem}")
+                    log.debug("updateMatchedZones -  ready to update item ${existingItem}")
                     domainsToUpdate.add(existingItem)
                 }
             }
@@ -573,11 +573,11 @@ class MicrosoftDnsProvider implements DNSProvider {
                 log.debug("listZones - integration ${integration.name} - rpcData: ${rpcData}")
                 def zoneRecords = parseListSet(rpcData.cmdOut)
                 if (zoneFilters) {
-                    log.info("listZones - integration ${integration.name} - Applying glob style zone filters : ${config.zoneFilter} regEx: ${zoneFilters}")
+                    log.debug("listZones - integration ${integration.name} - Applying glob style zone filters : ${config.zoneFilter} regEx: ${zoneFilters}")
                     def filteredZoneRecords = zoneRecords.collect {zone -> 
                         // Does this zone name match any of the import zoneFilters
                         if (zoneFilters.find {(zone.ZoneName ==~ it)}) {
-                            log.info("listZones - integration ${integration.name} - found matching zone: {$zone.ZoneName}")
+                            log.debug("listZones - integration ${integration.name} - found matching zone: {$zone.ZoneName}")
                             return zone
                         } else {
                             log.warn("listZones - integration ${integration.name} - Skipping non-matching zone: {$zone.ZoneName}")
@@ -586,7 +586,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                     rtn.zoneList = filteredZoneRecords
                     rtn.success = true
                 } else {
-                    log.info("listZones - integration ${integration.name} - No Zone filter - importing all zones")
+                    log.debug("listZones - integration ${integration.name} - No Zone filter - importing all zones")
                     rtn.zoneList = zoneRecords
                     rtn.success = true
                 }
@@ -603,7 +603,7 @@ class MicrosoftDnsProvider implements DNSProvider {
 
         def rtn = [success:false, recordList:[]]
         try {
-            log.info("listRecords - integration ${integration.name} - importing zone ${domain.externalId}")
+            log.debug("listRecords - integration ${integration.name} - importing zone ${domain.externalId}")
             String computerName = integration.servicePath ?: ""
             String command = buildGetDnsResourceRecordScript(domain.externalId,computerName)
             def rpcData = executeCommandScript(integration, command)
@@ -611,7 +611,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                 rtn.success = true
                 def zoneRecords = parseListSet(rpcData.cmdOut)
                 rtn.recordList = zoneRecords
-                log.info("listRecords - integration ${integration.name} - zone: ${domain.externalId} resourceRecords: ${zoneRecords.size()}")
+                log.debug("listRecords - integration ${integration.name} - zone: ${domain.externalId} resourceRecords: ${zoneRecords.size()}")
             }
             else {
                 log.error("listRecords - integration ${integration.name} - zone: ${domain.externalId} - status: ${rpcData.status} - details: ${rpcData.errOut}")
@@ -659,7 +659,7 @@ class MicrosoftDnsProvider implements DNSProvider {
             log.debug("executeCommand TaskResult ${result.toMap()}")
             // Check for any Microsoft DNS service error codes
             if (result.success) {
-                log.info("executeCommand - Microsoft DNS Rpc process on host ${opts.host} completed successfully. Process exitCode ${result.exitCode}")
+                log.debug("executeCommand - Microsoft DNS Rpc process on host ${opts.host} completed successfully. Process exitCode ${result.exitCode}")
                 result.msg = "Remote Process completed successfully"
             } else {
                 //Did the remote process actually connect - check exitCode: null indicates failed to establish a connection 
@@ -939,7 +939,7 @@ class MicrosoftDnsProvider implements DNSProvider {
         $ReturnStatus = Invoke-Command -Scriptblock $exportCredential -ArgumentList "<%username%>","<%password%>"
         $ReturnStatus | ConvertTo-Json -depth 2 -Compress
         '''
-        log.info("buildCacheCredentialScript - Building script to securely cache credentials for ${username} in LOCALAPPDATA:dnsCred.xml")
+        log.debug("buildCacheCredentialScript - Building script to securely cache credentials for ${username} in LOCALAPPDATA:dnsCred.xml")
         String runCmd = codeBlock.stripIndent().replace("<%username%>",username).replace("<%password%>",password)
         // Dont debug runCmd as it contains creds
         return runCmd        
@@ -990,9 +990,9 @@ class MicrosoftDnsProvider implements DNSProvider {
             $ReturnStatus | ConvertTo-Json -depth 2 -Compress
         '''
         if (computerName) {
-            log.info("buildTestServiceCredentialScript - Building script to test access to DNS Services on ${computerName} using secure cached credential")
+            log.debug("buildTestServiceCredentialScript - Building script to test access to DNS Services on ${computerName} using secure cached credential")
         } else {
-            log.info("buildTestServiceCredentialScript - Building script to test access to DNS Services")
+            log.debug("buildTestServiceCredentialScript - Building script to test access to DNS Services")
         }
         String runCmd = codeBlock.stripIndent().replace("<%computer%>",computerName)
         log.debug("buildTestServiceCredentialScript - ${runCmd}")
@@ -1176,7 +1176,7 @@ class MicrosoftDnsProvider implements DNSProvider {
         '''    
 
         String runCmd = codeBlock.stripIndent().replace("<%zone%>",zone).replace("<%computer%>",computerName)
-        log.info("buildGetDnsResourceRecordScript - Building script to get zone resource records for zone ${zone}")
+        log.debug("buildGetDnsResourceRecordScript - Building script to get zone resource records for zone ${zone}")
         log.debug("buildGetDnsResourceRecordScript : ${runCmd}")
         return runCmd
     }
