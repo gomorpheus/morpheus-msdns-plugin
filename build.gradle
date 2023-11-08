@@ -33,7 +33,7 @@ configurations {
 }
 
 dependencies {
-	provided "com.morpheusdata:morpheus-plugin-api:0.13.4"
+	provided "com.morpheusdata:morpheus-plugin-api:$plugincore"
 	provided "org.codehaus.groovy:groovy-all:$groovyVersion"
 	implementation 'commons-beanutils:commons-beanutils:1.9.3'
 	implementation "org.slf4j:slf4j-api:$slf4jVersion"
@@ -73,9 +73,9 @@ jar {
 				'Morpheus-Logo': 'assets/microsoft.dns.svg',
 				'Morpheus-Logo-Dark': 'assets/microsoft.dns.svg',
 				'Morpheus-Color': '#ffffff',
-				'Morpheus-Labels': 'DNS',
+				'Morpheus-Labels': 'pkugin,networking,dns',
 				'Morpheus-Repo': 'https://github.com/gomorpheus/morpheus-msdns-plugin',
-				'Morpheus-Min-Appliance-Version': "5.5.2"
+				'Morpheus-Min-Appliance-Version': minversion
 		)
 	}
 }
