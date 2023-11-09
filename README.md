@@ -1,5 +1,10 @@
 # Microsoft DNS Morpheus Plugin
 
+## Version 3.0
+### Morpheus tested version 6.0.6
+### Plugin API version 0.14.4 
+
+## Introduction 
 This is the official Morpheus plugin for interacting with Microsoft DNS. This automates functions as it relates to automatically creating DNS Records and cleaning up DNS records both during workload provisioning and manual. It should be noted that if joining a VM to a Domain, this integration is not needed as the Domain joining typically auto creates a zone record. This was originally embedded into morpheus and is being extracted for easier maintenance
 
 ### Building
