@@ -514,7 +514,7 @@ class MicrosoftDnsProvider implements DNSProvider {
         addList?.each {record ->
             if(record['hostName']) {
                 def addConfig = [networkDomain:new NetworkDomain(id: domain.id), fqdn:NetworkUtility.getDomainRecordFqdn(record['hostName'] as String, domain.fqdn),
-                                 type:record['recordType']?.toUpperCase(), comments:record.comments, ttl:convertTtlStringToSeconds(record['timeToLive']),
+                                 type:record['recordType']?.toUpperCase(), comments:record.comments, ttl:record['timeToLive'],
                                  externalId:record['distinguishedName'], internalId:record['recordData'], source:'sync',
                                  recordData:record['recordData'], content:record['recordData']]
                 if(addConfig.type == 'SOA' || addConfig.type == 'NS')

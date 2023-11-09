@@ -33,7 +33,7 @@ class MicrosoftDnsPluginHelper {
     // Returns the Powershell Helper module file name for use on Windows RPC host
     // The Path is always %LOCALAPPDATA% on the Windows Host
     public static String getHelperFile() {
-        return "morpheusDnsPluginHelper_v22.ps1"
+        return "morpheusDnsPluginHelper_v30.ps1"
     }
 
     // Load a Project resource from resourcePath and return a String

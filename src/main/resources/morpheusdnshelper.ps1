@@ -438,8 +438,8 @@ param (
                 recordData=""
             }
             switch ($rec.RecordType) {
-                "A" {$dnsout.recordData = $rec.RecordData.IPv4address.IPAddressToString}
-                "AAAA" {$dnsout.recordData = $rec.RecordData.IPv6address.IPAddressToString}
+                "A" {$dnsout.recordData = $rec.RecordData.IPv4address}
+                "AAAA" {$dnsout.recordData = $rec.RecordData.IPv6address}
                 "AFSDB" {$dnsout.recordData = "[" + $rec.RecordData.SubType + "][" + $rec.RecordData.ServerName + "]"}
                 "ATMA" {$dnsout.recordData = "[" + $rec.RecordData.AddressType + "][" + $rec.RecordData.Address + "]"}
                 "DHCID" {$dnsout.recordData = $rec.RecordData.DHCID}
@@ -772,7 +772,7 @@ Function Get-MorpheusDnsResourceRecord {
     $GetZoneRecordBlock = {
         param($zone,$serviceHost=$null)
         $ret=[PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null;collectionTime=0;elapsedTime=0}
-        $start = GetDate
+        $start = Get-Date
         $params=@{
             ZoneName=$zone;
             ErrorAction="Stop"
