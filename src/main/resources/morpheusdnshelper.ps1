@@ -388,7 +388,92 @@ Function Test-MorpheusServicePath {
     $rtn.cmdOut.domainSOAServers = $soaServers.cmdOut
     # $rtn.cmdOut.serviceType should now be set to winrm, wmi or local 
     $rtn | ConvertTo-Json -Depth 5 -Compress
-}            
+}
+
+#Pipeline Function to get Dns Zones
+Function Out-DnsZoneRecord {
+
+    param (
+        [Parameter(ValueFromPipeline=$true)]$DnsRec
+    )
+
+    begin {
+        $Out = [System.Collections.Generic.List[PSCustomObject]]::new()
+    }
+    process {
+        foreach ($rec in $dnsRec) {
+            $dnsout = [PSCustomObject]@{
+                zoneName = $rec.ZoneName;
+                zoneType = $rec.ZoneType;
+                isAutoCreated = $rec.IsAutoCreated;
+                isDsIntegrated = $rec.IsDsIntegrated;
+                isReverseLookupZone = $rec.IsReverseLookupZone;
+                isSigned = $rec.IsSigned
+            }
+            $Out.Add($dnsOut)
+        }
+    }
+    end {
+        $Out
+    }
+}
+
+#Pipeline Function to get RecordData properties from DnsServerResourceRecord for known RRTypes
+Function Out-DnsResourceRecord {
+
+param (
+    [Parameter(ValueFromPipeline=$true)]$DnsRec
+)
+
+    begin {
+        $Out = [System.Collections.Generic.List[PSCustomObject]]::new()
+    }
+    process {
+        foreach ($rec in $dnsRec) {
+            $dnsout = [PSCustomObject]@{
+                hostName=$rec.HostName;
+                distinguishedName=$rec.DistinguishedName;
+                recordType=$rec.RecordType;
+                timeToLive=$rec.TimeToLive.TotalSeconds;
+                recordData=""
+            }
+            switch ($rec.RecordType) {
+                "A" {$dnsout.recordData = $rec.RecordData.IPv4address.IPAddressToString}
+                "AAAA" {$dnsout.recordData = $rec.RecordData.IPv6address.IPAddressToString}
+                "AFSDB" {$dnsout.recordData = "[" + $rec.RecordData.SubType + "][" + $rec.RecordData.ServerName + "]"}
+                "ATMA" {$dnsout.recordData = "[" + $rec.RecordData.AddressType + "][" + $rec.RecordData.Address + "]"}
+                "DHCID" {$dnsout.recordData = $rec.RecordData.DHCID}
+                "CNAME" {$dnsout.recordData = $rec.RecordData.HostNameAlias}
+                "DNAME" {$dnsout.recordData = $rec.RecordData.DomainNameAlias}
+                "HINFO" {$dnsout.recordData = "[" + $rec.RecordData.Cpu + "][" + $rec.RecordData.OperatingSystem + "]"}
+                "ISDN" {$dnsout.recordData = "[" + $rec.RecordData.IsdnNumber + "][" + $rec.RecordData.IsdnSubAddress + "]"}
+                "MX" {$dnsout.recordData =  "[" + $rec.RecordData.Preference + "][" + $rec.RecordData.MailExchange + "]"}
+                "NS" {$dnsout.recordData = $rec.RecordData.NameServer}
+                "PTR" {$dnsout.recordData = $rec.RecordData.PtrDomainName}
+                "RP" {$dnsout.recordData = "[" + $rec.RecordData.ResponsiblePerson + "][" + $rec.RecordData.Description + "]"}
+                "RT" {$dnsout.recordData = "[" + $rec.RecordData.Preference + "][" + $rec.RecordData.IntermediateHost + "]"}
+                "SOA" {$dnsout.recordData = "[" + $rec.RecordData.SerialNumber + "][" + $rec.RecordData.PrimaryServer + "][" + $rec.RecordData.ResponsiblePerson + "][" + $rec.RecordData.ExpireLimit + "][" + $rec.RecordData.MinimumTimetoLive + "][" + $rec.RecordData.RefreshInterval + "][" + $rec.RecordData.RetryDelay + "]"}
+                "SRV" {$dnsout.recordData = "[" + $rec.RecordData.Priority + "][" + $rec.RecordData.Weight + "][" + $rec.RecordData.Port + "][" + $rec.RecordData.DomainName + "]"}
+                "TXT" {$dnsout.recordData = $rec.RecordData.DescriptiveText}
+                "WINS" {$dnsout.recordData = "[" + $rec.RecordData.Replicate + "][" + $rec.RecordData.LookupTimeout + "][" + $rec.RecordData.CacheTimeout + "][" + $rec.RecordData.WinsServers + "]"}
+                "WINSR" {$dnsout.recordData = "[" + $rec.RecordData.Replicate + "][" + $rec.RecordData.LookupTimeout + "][" + $rec.RecordData.CacheTimeout + "][" + $rec.RecordData.ResultDomain + "]"}
+                "WKS" {$dnsout.recordData = "[" + $rec.RecordData.InternetProtocol + "][" + $rec.RecordData.Service + "][" + $rec.RecordData.InternetAddress + "]"}
+                "X25" {$dnsout.recordData = $rec.RecordData.PSDNAddress}
+                "DNSKEY" {$dnsout.recordData = "DNSKey unsupported"}
+                "DS" {$dnsout.recordData = "[" + $rec.RecordData.KeyTag + "][" + $rec.RecordData.CryptoAlgorithm + "][" + $rec.RecordData.DigestType + "][" + $rec.RecordData.Digest + "]"}
+                "NSEC" {$dnsout.recordData = "[" + $rec.RecordData.Name + "][" + $rec.RecordData.CoveredRecordTypes + "]"}
+                "NSEC3" {$dnsout.recordData = "[" + $rec.RecordData.HashAlgorithm + "][" + $rec.RecordData.OptOut + "][" + $rec.RecordData.Iterations + "][" + $rec.RecordData.Salt + "][" + $rec.RecordData.NextHashedOwnerName + "][" + $rec.RecordData.CoveredRecordTypes + "]"}
+                "NSEC3PARAM" {$dnsout.recordData = "[" + $rec.RecordData.HashAlgorithm + "][" + $rec.RecordData.Iterations + "][" + $rec.RecordData.Salt + "]"}
+                "RRSIG" {$dnsout.recordData = "[" + $rec.RecordData.TypeCovered + "][" + $rec.RecordData.CryptoAlgorithm + "][" + $rec.RecordData.KeyTag + "]["+ $rec.RecordData.LabelCount + "]["  + $rec.RecordData.NameSigner + "][" + "SignatureInception: " + $rec.RecordData.SignatureInception + "][" + "SignatureExpiration: " + $rec.RecordData.SignatureExpiration + "][" + $rec.RecordData.OriginalTtl + "][" + $rec.RecordData.Signature + "]"}
+                default {$dnsout.recordData =  "unsupported rType $($Rec.RecordType)"}
+        }
+            $Out.Add($dnsOut)
+        }
+    }
+    end {
+        $Out
+    }
+}
 
 Function Add-MorpheusDnsRecord {
     [CmdletBinding()]
@@ -624,13 +709,15 @@ Function Get-MorpheusDnsZone {
 
     $GetZoneBlock = {
         param($serviceHost=$Null)
-        $ret=[PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null}
+        $ret=[PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null;collectionTime=0;elapsedTime=0}
+        $start = Get-Date
         $params=@{ErrorAction="Stop"}
         if ($serviceHost) {
             $params.Add("ComputerName",$serviceHost)
         }
-        try {   
-            $ret.cmdOut=Get-DnsServerZone @params | Format-List | Out-String -width 512
+        try {
+            #Collect
+            $ret.cmdOut=Get-DnsServerZone @params
         }
         catch {
             if ($_.Exception.ErrorData) {
@@ -641,9 +728,12 @@ Function Get-MorpheusDnsZone {
                 $ret.errOut = [PSCustomObject]@{message=$_.Exception.Message}
             }
         }
+        $ret.collectionTime = (New-TimeSpan -Start $start).TotalMilliseconds.ToString("#")
         $ret
-    }
-    $rtn = [PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null}
+    } # End GetZoneBlock
+
+    $rtn = [PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null;collectionTime=0;elapsedTime=0}
+    $start = Get-Date
     $params = @{ScriptBlock=$GetZoneBlock;ErrorAction="Stop"}
     if ($Computer) {
         $cred = Import-MorpheusCredential
@@ -661,12 +751,13 @@ Function Get-MorpheusDnsZone {
     }
     try {
         $rtn = Invoke-Command @params
-        $rtn.cmdOut = $rtn.cmdOut | Parse-DnsResponse
+        $rtn.cmdOut = $rtn.cmdOut | Out-DnsZoneRecord
     }
     catch {
-        $rtn.status=1
+        $rtn.status = 1
         $rtn.errOut = [PSCustomObject]@{message=$_.Exception.Message}
     }
+    $rtn.elapsedTime = (New-TimeSpan -Start $start).TotalMilliseconds.ToString("#")
     $rtn | ConvertTo-Json -Depth 5 -Compress
 }
 
@@ -680,7 +771,8 @@ Function Get-MorpheusDnsResourceRecord {
 
     $GetZoneRecordBlock = {
         param($zone,$serviceHost=$null)
-        $ret=[PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null}
+        $ret=[PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null;collectionTime=0;elapsedTime=0}
+        $start = GetDate
         $params=@{
             ZoneName=$zone;
             ErrorAction="Stop"
@@ -689,7 +781,7 @@ Function Get-MorpheusDnsResourceRecord {
             $params.Add("ComputerName",$serviceHost)
         }
         try {   
-            $ret.cmdOut=Get-DnsServerResourceRecord @params | Format-List | Out-String -width 512
+            $ret.cmdOut=Get-DnsServerResourceRecord @params
         }
         catch {
             if ($_.Exception.ErrorData) {
@@ -700,9 +792,12 @@ Function Get-MorpheusDnsResourceRecord {
                 $ret.errOut = [PSCustomObject]@{message=$_.Exception.Message}
             }
         }
+        $ret.collectionTime = (New-TimeSpan -Start $start).TotalMilliseconds.ToString("#")
         $ret
-    }
-    $rtn = [PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null}
+    } #end GetZoneRecordBlock
+
+    $rtn = [PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null;collectionTime=0;elapsedTime=0}
+    $start = Get-Date
     $params = @{ScriptBlock=$GetZoneRecordBlock;ArgumentList=$Zone;ErrorAction="Stop"}
     if ($Computer) {
         $cred = Import-MorpheusCredential
@@ -720,12 +815,13 @@ Function Get-MorpheusDnsResourceRecord {
     }
     try {
         $rtn = Invoke-Command @params
-        $rtn.cmdOut = $rtn.cmdOut | Parse-DnsResponse
+        $rtn.cmdOut = $rtn.cmdOut | Out-DnsResourceRecord
     }
     catch {
         $rtn.status=1
         $rtn.errOut = [PSCustomObject]@{message=$_.Exception.Message}
     }
+    $rtn.elapsedTime = (New-TimeSpan -Start $start).TotalMilliseconds.ToString("#")
     $rtn | ConvertTo-Json -Depth 5 -Compress
 }
 
