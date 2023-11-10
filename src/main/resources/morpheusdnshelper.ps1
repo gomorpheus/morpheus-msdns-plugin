@@ -414,7 +414,8 @@ Function Out-DnsZoneRecord {
         }
     }
     end {
-        $Out
+        # always return an array
+        return ,$Out
     }
 }
 
@@ -438,8 +439,8 @@ param (
                 recordData=""
             }
             switch ($rec.RecordType) {
-                "A" {$dnsout.recordData = $rec.RecordData.IPv4address}
-                "AAAA" {$dnsout.recordData = $rec.RecordData.IPv6address}
+                "A" {$dnsout.recordData = $rec.RecordData.IPv4address.ToString()}
+                "AAAA" {$dnsout.recordData = $rec.RecordData.IPv6address.ToString()}
                 "AFSDB" {$dnsout.recordData = "[" + $rec.RecordData.SubType + "][" + $rec.RecordData.ServerName + "]"}
                 "ATMA" {$dnsout.recordData = "[" + $rec.RecordData.AddressType + "][" + $rec.RecordData.Address + "]"}
                 "DHCID" {$dnsout.recordData = $rec.RecordData.DHCID}
@@ -471,7 +472,8 @@ param (
         }
     }
     end {
-        $Out
+        # always return an array
+        return ,$Out
     }
 }
 
@@ -557,7 +559,7 @@ Function Add-MorpheusDnsRecord {
         finally {
             # Check DNS for matching record and return Data. Retain any error messages
             try {
-                $ret.cmdOut = Get-DnsServerResourceRecord @getparams | Where-Object {$_.RecordData.$dataPropertyName -eq $data} | Format-List | Out-String -Width 512
+                $ret.cmdOut = Get-DnsServerResourceRecord @getparams | Where-Object {$_.RecordData.$dataPropertyName -eq $data}
             }
             catch {
                 $ret.cmdOut = $Null
@@ -589,7 +591,7 @@ Function Add-MorpheusDnsRecord {
     }
     try {
         $rtn = Invoke-Command @params
-        $rtn.cmdOut = $rtn.cmdOut | Parse-DnsResponse
+        $rtn.cmdOut = $rtn.cmdOut | Out-DnsResourceRecord
     }
     catch {
         $rtn.status=1
@@ -663,7 +665,7 @@ Function Remove-MorpheusDnsRecord {
         }
         finally {
             if ($recordToRemove) {
-               $ret.cmdOut = $recordToRemove | Format-List | Out-String -Width 512
+               $ret.cmdOut = $recordToRemove
             }
         }
         $ret
@@ -691,7 +693,7 @@ Function Remove-MorpheusDnsRecord {
     }
     try {
         $rtn = Invoke-Command @params
-        $rtn.cmdOut = $rtn.cmdOut | Parse-DnsResponse
+        $rtn.cmdOut = $rtn.cmdOut | Out-DnsResourceRecord
     }
     catch {
         $rtn.status=1
@@ -780,7 +782,8 @@ Function Get-MorpheusDnsResourceRecord {
         if ($serviceHost) {
             $params.Add("ComputerName",$serviceHost)
         }
-        try {   
+        try {
+            #Collect
             $ret.cmdOut=Get-DnsServerResourceRecord @params
         }
         catch {
@@ -838,7 +841,8 @@ Function Find-MorpheusDnsResourceRecord {
     # ScriptBlock
     $findRecordBlock = {
         param($rrType,$name,$zone,$data,$serviceHost=$null)
-        $ret=[PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null}
+        $ret=[PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null;collectionTime=0;elapsedTime=0}
+        $start = Get-Date
         switch ($rrType) {
             "A"     {$dataPropertyName="IpV4Address"}
             "AAAA"  {$dataPropertyName="IpV6Address"}
@@ -855,18 +859,18 @@ Function Find-MorpheusDnsResourceRecord {
             RRType=$rrType;
             ErrorAction="Stop"
         }
-        if ($serviceHost) {
-            $getparams.Add("ComputerName",$serviceHost)
+        if ($ServiceHost) {
+            $getparams.Add("ComputerName",$ServiceHost)
         }
-        if ($name) {
-            $getparams.Add("Name",$name)
+        if ($Name) {
+            $getparams.Add("Name",$Name)
         }
 
         try {
             if ($data) {
-                $ret.cmdOut=Get-DnsServerResourceRecord @getparams | Where-Object {$_.RecordData.$dataPropertyName -eq $data} | Format-List | Out-String -width 512
+                $ret.cmdOut=Get-DnsServerResourceRecord @getparams | Where-Object {$_.RecordData.$dataPropertyName -eq $data}
             } else {
-                $ret.cmdOut=Get-DnsServerResourceRecord @getparams | Format-List | Out-String -width 512
+                $ret.cmdOut=Get-DnsServerResourceRecord @getparams
             } 
         }
         catch {
@@ -878,10 +882,12 @@ Function Find-MorpheusDnsResourceRecord {
                 $ret.errOut = [PSCustomObject]@{message=$_.Exception.Message}
             }
         }
+        $ret.collectionTime = (New-TimeSpan -Start $start).TotalMilliseconds.ToString("#")
         $ret
     } # End of ScriptBlock
 
-    $rtn = [PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null}
+    $rtn = [PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null;collectionTime=0;elapsedTime=0}
+    $start = Get-Date
     $params = @{
         ScriptBlock=$findRecordBlock;
         ArgumentList=@($RrType,$Name,$Zone,$Data);
@@ -903,11 +909,12 @@ Function Find-MorpheusDnsResourceRecord {
     }
     try {
         $rtn = Invoke-Command @params
-        $rtn.cmdOut = $rtn.cmdOut | Parse-DnsResponse
+        $rtn.cmdOut = $rtn.cmdOut | Out-DnsResourceRecord
     }
     catch {
         $rtn.status=1
         $rtn.errOut = [PSCustomObject]@{message=$_.Exception.Message}
     }
+    $rtn.elapsedTime = (New-TimeSpan -Start $start).TotalMilliseconds.ToString("#")
     $rtn | ConvertTo-Json -Depth 5 -Compress
 }
