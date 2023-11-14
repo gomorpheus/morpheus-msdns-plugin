@@ -493,7 +493,8 @@ Function Add-MorpheusDnsRecord {
 
     $addBlock = {
         param($rrType,$name,$zone,$data,$ttl,$createPtr,$serviceHost=$null)
-        $ret=[PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null}
+        $ret=[PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null;collectionTime=0;elapsedTime=0}
+        $start = Get-Date
         $ts = New-TimeSpan -seconds $ttl
         switch ($rrType) {
             "A"     {$dataPropertyName="IpV4Address"; $rTypeParameterName="A"; $supportsCreatePtr=$True}
@@ -565,10 +566,12 @@ Function Add-MorpheusDnsRecord {
                 $ret.cmdOut = $Null
             }
         }
+        $ret.collectionTime = [Math]::Floor((New-TimeSpan -Start $start).TotalMilliseconds)
         $ret
     } #End of ScriptBlock
 
-    $rtn = [PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null}
+    $rtn = [PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null;collectionTime=0;elapsedTime=0}
+    $start = Get-Date
     $params = @{
         ScriptBlock=$addBlock;
         ErrorAction="Stop";
@@ -596,7 +599,8 @@ Function Add-MorpheusDnsRecord {
     catch {
         $rtn.status=1
         $rtn.errOut = [PSCustomObject]@{message=$_.Exception.Message}
-    }  
+    }
+    $rtn.elapsedTime = [Math]::Floor((New-TimeSpan -Start $start).TotalMilliseconds)
     $rtn | ConvertTo-Json -Depth 5 -Compress
 }
 
@@ -614,7 +618,8 @@ Function Remove-MorpheusDnsRecord {
     # Start of ScriptBlock
     $removeBlock = {
         param($rrType,$name,$zone,$data,$serviceHost=$Null)
-        $ret=[PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null}
+        $ret=[PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null;collectionTime=0;elapsedTime=0}
+        $start = Get-Date
         switch ($rrType) {
             "A"     {$dataPropertyName="IpV4Address"}
             "AAAA"  {$dataPropertyName="IpV6Address"}
@@ -668,10 +673,12 @@ Function Remove-MorpheusDnsRecord {
                $ret.cmdOut = $recordToRemove
             }
         }
+        $ret.collectionTime = [Math]::Floor((New-TimeSpan -Start $start).TotalMilliseconds)
         $ret
     } # End of ScriptBlock
 
-    $rtn = [PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null}
+    $rtn = [PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null;collectionTime=0;elapsedTime=0}
+    $start = Get-Date
     $params = @{
         ScriptBlock=$removeBlock;
         ArgumentList=@($RrType,$Name,$Zone,$Data);
@@ -699,6 +706,7 @@ Function Remove-MorpheusDnsRecord {
         $rtn.status=1
         $rtn.errOut = [PSCustomObject]@{message=$_.Exception.Message}            
     }
+    $rtn.elapsedTime = [Math]::Floor((New-TimeSpan -Start $start).TotalMilliseconds)
     $rtn | ConvertTo-Json -Depth 5 -Compress
 }
 
@@ -730,7 +738,7 @@ Function Get-MorpheusDnsZone {
                 $ret.errOut = [PSCustomObject]@{message=$_.Exception.Message}
             }
         }
-        $ret.collectionTime = (New-TimeSpan -Start $start).TotalMilliseconds.ToString("#")
+        $ret.collectionTime = [Math]::Floor((New-TimeSpan -Start $start).TotalMilliseconds)
         $ret
     } # End GetZoneBlock
 
@@ -759,7 +767,7 @@ Function Get-MorpheusDnsZone {
         $rtn.status = 1
         $rtn.errOut = [PSCustomObject]@{message=$_.Exception.Message}
     }
-    $rtn.elapsedTime = (New-TimeSpan -Start $start).TotalMilliseconds.ToString("#")
+    $rtn.elapsedTime = [Math]::Floor((New-TimeSpan -Start $start).TotalMilliseconds)
     $rtn | ConvertTo-Json -Depth 5 -Compress
 }
 
@@ -795,7 +803,7 @@ Function Get-MorpheusDnsResourceRecord {
                 $ret.errOut = [PSCustomObject]@{message=$_.Exception.Message}
             }
         }
-        $ret.collectionTime = (New-TimeSpan -Start $start).TotalMilliseconds.ToString("#")
+        $ret.collectionTime = [Math]::Floor((New-TimeSpan -Start $start).TotalMilliseconds)
         $ret
     } #end GetZoneRecordBlock
 
@@ -882,7 +890,7 @@ Function Find-MorpheusDnsResourceRecord {
                 $ret.errOut = [PSCustomObject]@{message=$_.Exception.Message}
             }
         }
-        $ret.collectionTime = (New-TimeSpan -Start $start).TotalMilliseconds.ToString("#")
+        $ret.collectionTime = [Math]::Floor((New-TimeSpan -Start $start).TotalMilliseconds)
         $ret
     } # End of ScriptBlock
 
@@ -915,6 +923,6 @@ Function Find-MorpheusDnsResourceRecord {
         $rtn.status=1
         $rtn.errOut = [PSCustomObject]@{message=$_.Exception.Message}
     }
-    $rtn.elapsedTime = (New-TimeSpan -Start $start).TotalMilliseconds.ToString("#")
+    $rtn.elapsedTime = [Math]::Floor((New-TimeSpan -Start $start).TotalMilliseconds)
     $rtn | ConvertTo-Json -Depth 5 -Compress
 }
