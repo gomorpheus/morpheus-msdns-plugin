@@ -656,7 +656,6 @@ class MicrosoftDnsProvider implements DNSProvider {
     TaskResult executeCommand(String command, Map opts) {
         def winrmPort = opts.port && opts.port != 22 ? opts.port : 5985
 
-        def dns = [:]
         TaskResult result
         log.debug("executeCommand - command: ${command}")
         log.debug("executeCommand - Using command parameter opts: ${opts}")
@@ -1142,14 +1141,16 @@ class MicrosoftDnsProvider implements DNSProvider {
             $GetZoneRecordBlock = {
                 param($zone)
                 $Ret=[PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null}
+
                 try {
+                    Set-Alias -Name gdnsr -Value Get-DnsServerResourceRecord
                     $res = @()
-                    $res += Get-DnsServerResourceRecord -ZoneName $zone -RRType "A" -ErrorAction Stop | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.IPv4Address.toString()}}   
-                    $res += Get-DnsServerResourceRecord -ZoneName $zone -RRType "TXT" -ErrorAction Stop | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.DescriptiveText.toString()}}
-                    $res += Get-DnsServerResourceRecord -ZoneName $zone -RRType "MX" -ErrorAction Stop | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.MailExchange.toString()}}
-                    $res += Get-DnsServerResourceRecord -ZoneName $zone -RRType "CNAME" -ErrorAction Stop | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.HostNameAlias.toString()}}
-                    $res += Get-DnsServerResourceRecord -ZoneName $zone -RRType "PTR" -ErrorAction Stop | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.PtrDomainName.toString()}}
-                    $res += Get-DnsServerResourceRecord -ZoneName $zone -RRType "AAAA" -ErrorAction Stop | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.IPv6Address.toString()}}
+                    $res += gdnsr -ZoneName $zone -RRType "A" | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.IPv4Address.toString()}}   
+                    $res += gdnsr -ZoneName $zone -RRType "TXT" | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.DescriptiveText.toString()}}
+                    $res += gdnsr -ZoneName $zone -RRType "MX" | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.MailExchange.toString()}}
+                    $res += gdnsr -ZoneName $zone -RRType "CNAME" | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.HostNameAlias.toString()}}
+                    $res += gdnsr -ZoneName $zone -RRType "PTR" | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.PtrDomainName.toString()}}
+                    $res += gdnsr -ZoneName $zone -RRType "AAAA" | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.IPv6Address.toString()}}
                     $Ret.cmdOut = ConvertTo-Json -Compress $res
                 }
                 catch {
@@ -1158,18 +1159,18 @@ class MicrosoftDnsProvider implements DNSProvider {
                 }
                 $Ret
             }
-            $Params = @{ScriptBlock=$GetZoneRecordBlock;ArgumentList="<%zone%>"}
-            $CachedCredFile = Join-Path -Path ([Environment]::GetEnvironmentVariable("LOCALAPPDATA")) -ChildPath "dnsCred.xml"
+            $P = @{ScriptBlock=$GetZoneRecordBlock;ArgumentList="<%zone%>"}
+            $ccf = Join-Path -Path ([Environment]::GetEnvironmentVariable("LOCALAPPDATA")) -ChildPath "dnsCred.xml"
 	        $computer = "<%computer%>"
             if ($computer) {
-                $Params.Add("ComputerName",$computer)
-                if (Test-Path -Path $CachedCredFile) {
-                    $cred = Import-CliXml -Path $CachedCredFile
-                    $Params.Add("Credential",$cred)
+                $P.Add("ComputerName",$computer)
+                if (Test-Path -Path $ccf) {
+                    $cred = Import-CliXml -Path $ccf
+                    $P.Add("Credential",$cred)
                 }
             }
-            $ReturnStatus = Invoke-Command @Params
-            $ReturnStatus | ConvertTo-Json -Compress  
+            $RetStatus = Invoke-Command @P
+            $RetStatus | ConvertTo-Json -Compress  
         '''
 
         String runCmd = codeBlock.stripIndent().replace("<%zone%>",zone).replace("<%computer%>",computerName)
