@@ -74,7 +74,11 @@ jar {
 				'Morpheus-Color': '#ffffff',
 				'Morpheus-Labels': 'plugin,networking,dns',
 				'Morpheus-Repo': 'https://github.com/gomorpheus/morpheus-msdns-plugin',
+<<<<<<< HEAD
 				'Morpheus-Min-Appliance-Version': minversion
+=======
+				'Morpheus-Min-Appliance-Version': "6.2.4"
+>>>>>>> api-0.15.x
 		)
 	}
 }
