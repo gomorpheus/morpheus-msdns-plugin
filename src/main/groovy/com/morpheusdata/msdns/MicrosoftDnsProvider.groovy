@@ -194,7 +194,9 @@ class MicrosoftDnsProvider implements DNSProvider {
             if(hostOnline) {
                 Date now = new Date()
                 cacheZones(integration)
-                cacheZoneRecords(integration)
+                if(rpcConfig?.inventoryExisting) {
+                    cacheZoneRecords(integration)
+                }
                 log.info("refresh - integration: ${integration.name} - Sync Completed in ${new Date().time - now.time}ms")
                 morpheus.integration.updateAccountIntegrationStatus(integration, AccountIntegration.Status.ok).subscribe().dispose()
             } else {
@@ -225,22 +227,26 @@ class MicrosoftDnsProvider implements DNSProvider {
 
         // config.zoneFilter is the glob style filter for importing zones
         def config = integration.getConfigMap()
+        def rpcConfig = getRpcConfig(integration)
         //def credentialService = morpheusContext.getAccountCredential()
         log.info("verifyAccountIntegration - Validating integration: ${integration} - opts: ${opts}")
         try {
             // Validate Form options
             rtn.errors = [:]
-            if(!integration.name || integration.name == ''){
-                rtn.errors['name'] = 'name is required'
+            if(!rpcConfig.name || rpcConfig.name == ''){
+                rtn.errors['name'] = 'Name is Required'
             }
-            if(!integration.serviceUrl || integration.serviceUrl == ''){
-                rtn.errors['serviceUrl'] = 'DNS Server is required'
+            if(!rpcConfig.host || rpcConfig.host == ''){
+                rtn.errors['serviceUrl'] = 'DNS Server is Required'
             }
-            if((!integration.servicePassword || integration.servicePassword == '') && (!integration.credentialData?.password || integration.credentialData?.password == '')){
-                rtn.errors['servicePassword'] = 'password is required'
+            if(!rpcConfig.port || rpcConfig.port == ''){
+                rtn.errors['servicePort'] = 'WinRM Port is Required'
             }
-            if((!integration.serviceUsername || integration.serviceUsername == '') && (!integration.credentialData?.username || integration.credentialData?.username == '')){
-                rtn.errors['serviceUsername'] = 'username is required'
+            if((!rpcConfig.password || rpcConfig.password == '')){
+                rtn.errors['servicePassword'] = 'Password is Required'
+            }
+            if((!rpcConfig.username || rpcConfig.username == '')){
+                rtn.errors['serviceUsername'] = 'Username is Required'
             }
             if (config.zoneFilter) {
                 def zoneFilters = config.zoneFilter.tokenize(",").each {
@@ -253,10 +259,10 @@ class MicrosoftDnsProvider implements DNSProvider {
             // Validate Connectivity to serviceUrl over WinRM
             if (integration.serviceUrl) {
                 log.info("verifyAccountIntegration - integration: ${integration.name} - checking winRm on serviceUrl: ${integration.serviceUrl}")
-                def serviceHostOnline = ConnectionUtils.testHostConnectivity(integration.serviceUrl, 5985, false, true, null)
+                def serviceHostOnline = ConnectionUtils.testHostConnectivity(rpcConfig.host, rpcConfig.port ?: 5985, false, true, null)
                 if (!serviceHostOnline) {
-                    log.warn("verifyAccountIntegration - integration: ${integration.name} - no winRm connectivity to serviceUrl: ${integration.serviceUrl}")
-                    rtn.errors["serviceUrl"] = "serviceUrl not reachable over WinRM (port 5985)"
+                    log.warn("verifyAccountIntegration - integration: ${integration.name} - no winRm connectivity to serviceUrl: ${integration.serviceUrl} on port: ${rpcConfig.port}")
+                    rtn.errors["serviceUrl"] = "serviceUrl not reachable over WinRM (port ${rpcConfig.port})"
                 } else {
                     def rpcData
                     computerName = integration.servicePath ?: ""
@@ -493,17 +499,19 @@ class MicrosoftDnsProvider implements DNSProvider {
     List<OptionType> getIntegrationOptionTypes() {
         return [
                 new OptionType(code: 'accountIntegration.microsoft.dns.serviceUrl', name: 'Service URL', inputType: OptionType.InputType.TEXT, fieldName: 'serviceUrl', fieldLabel: 'DNS Server', fieldContext: 'domain', required: true, displayOrder: 0),
-                new OptionType(code: 'accountIntegration.microsoft.dns.credentials', name: 'Credentials', inputType: OptionType.InputType.CREDENTIAL, fieldName: 'type', fieldLabel: 'Credentials', fieldContext: 'credential', required: true, displayOrder: 1, defaultValue: 'local',optionSource: 'credentials',config: '{"credentialTypes":["username-password"]}'),
+                new OptionType(code: 'accountIntegration.microsoft.dns.servicePort', name: 'Service Port', inputType: OptionType.InputType.TEXT, fieldName: 'servicePort', fieldLabel: 'WinRM Port', fieldContext: 'domain', defaultValue: '5985', required: true, displayOrder: 0),
+                new OptionType(code: 'accountIntegration.microsoft.dns.credentials', name: 'Credentials', inputType: OptionType.InputType.CREDENTIAL, fieldName: 'type', fieldLabel: 'Credentials', fieldContext: 'credential', required: true, displayOrder: 2, defaultValue: 'local',optionSource: 'credentials',config: '{"credentialTypes":["username-password"]}'),
 
-                new OptionType(code: 'accountIntegration.microsoft.dns.serviceUsername', name: 'Service Username', inputType: OptionType.InputType.TEXT, fieldName: 'serviceUsername', fieldLabel: 'Username', fieldContext: 'domain', required: true, displayOrder: 2,localCredential: true),
-                new OptionType(code: 'accountIntegration.microsoft.dns.servicePassword', name: 'Service Password', inputType: OptionType.InputType.PASSWORD, fieldName: 'servicePassword', fieldLabel: 'Password', fieldContext: 'domain', required: true, displayOrder: 3,localCredential: true),
+                new OptionType(code: 'accountIntegration.microsoft.dns.serviceUsername', name: 'Service Username', inputType: OptionType.InputType.TEXT, fieldName: 'serviceUsername', fieldLabel: 'Username', fieldContext: 'domain', required: true, displayOrder: 3,localCredential: true),
+                new OptionType(code: 'accountIntegration.microsoft.dns.servicePassword', name: 'Service Password', inputType: OptionType.InputType.PASSWORD, fieldName: 'servicePassword', fieldLabel: 'Password', fieldContext: 'domain', required: true, displayOrder: 4,localCredential: true),
+                new OptionType(code: 'accountIntegration.microsoft.dns.zoneFilter', name: 'Zone Filter', inputType: OptionType.InputType.TEXT, fieldName: 'zoneFilter', fieldLabel: 'Zone Filter', required: false, displayOrder: 70),
+                new OptionType(code: 'accountIntegration.microsoft.dns.inventoryExisting', name: 'Inventory Existing', inputType: OptionType.InputType.CHECKBOX, defaultValue: 'on', fieldName: 'inventoryExisting', fieldLabel: 'Inventory Existing', fieldContext: 'config', helpBlock:'Inventory existing DNS records.  Not recommended for extra large environments.', displayOrder: 72),
                 new OptionType(code:'accountIntegration.microsoft.dns.servicePath', inputType: OptionType.InputType.TEXT, name:'servicePath', category:'accountIntegration.microsoft.dns',
                         fieldName:'servicePath', fieldCode: 'gomorpheus.label.computerName', fieldLabel:'Computer Name', fieldContext:'domain', required:false, enabled:true, editable:true, global:false,
                         placeHolder:null, helpBlock:'', defaultValue:null, custom:false, displayOrder:75),
                 new OptionType(code:'accountIntegration.microsoft.dns.serviceFlag', inputType: OptionType.InputType.CHECKBOX, name:'serviceFlag', category:'accountIntegration.microsoft.dns',
                         fieldName:'serviceFlag', fieldCode: 'gomorpheus.label.dnsPointerCreate', fieldLabel:'Create Pointers', fieldContext:'domain', required:false, enabled:true, editable:true, global:false,
-                        placeHolder:null, helpBlock:'', defaultValue:'on', custom:false, displayOrder:80),
-                new OptionType(code: 'accountIntegration.microsoft.dns.zoneFilter', name: 'Zone Filter', inputType: OptionType.InputType.TEXT, fieldName: 'zoneFilter', fieldLabel: 'Zone Filter', required: false, displayOrder: 70)                              
+                        placeHolder:null, helpBlock:'', defaultValue:'on', custom:false, displayOrder:80)                   
         ]
     }
 
@@ -686,11 +694,15 @@ class MicrosoftDnsProvider implements DNSProvider {
      */
     private getRpcConfig(AccountIntegration integration, String computerName=null) {
         def credentialService = morpheusContext.getAccountCredential()
+        def config = integration.getConfigMap()
         log.debug("getRpcConfig - integration: ${integration.name} - credentialData : ${integration.credentialData}")
         def rtn = [:]
+        rtn.name = integration.name
         rtn.host = integration.serviceUrl
         rtn.username = integration.credentialData?.username ?: integration.serviceUsername
         rtn.password = integration.credentialData?.password ?: integration.servicePassword
+        rtn.inventoryExisting = config.inventoryExisting
+        rtn.port = integration.servicePort.toInteger()
         //rtn.elevated = computerName ? true : false
         rtn.elevated = false // never use the JRuby if possible
         log.debug("getRpcConfig - integration: ${integration.name} - rtn: ${rtn}")
