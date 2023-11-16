@@ -313,7 +313,7 @@ class MicrosoftDnsProvider implements DNSProvider {
     def cacheZones(AccountIntegration integration, Map opts = [:]) {
         try {
             def listResults = listZones(integration)
-
+            log.info("Zone List Results: ${listResults}")
             if (listResults.success) {
                 List apiItems = listResults.zoneList as List<Map>
                 Observable<NetworkDomainIdentityProjection> domainRecords = morpheus.network.domain.listIdentityProjections(integration.id)
@@ -399,11 +399,9 @@ class MicrosoftDnsProvider implements DNSProvider {
     // Cache Zones methods
     def cacheZoneRecords(AccountIntegration integration, Map opts=[:]) {
 
-        morpheus.network.domain.listIdentityProjections(integration.id).buffer(50).concatMap { Collection<NetworkDomainIdentityProjection> resourceIdents ->
-            return morpheus.network.domain.listById(resourceIdents.collect{it.id})
-        }.concatMap { NetworkDomain domain ->
+        morpheus.network.domain.list(new DataQuery().withFilters(new DataFilter('refType','AccountIntegration'),new DataFilter('refId',integration.id))).flatMap { NetworkDomain domain ->
             def listResults = listRecords(integration,domain)
-            log.debug("cacheZoneRecords - domain: ${domain.externalId}, listResults: ${listResults}")
+            log.info("cacheZoneRecords - domain: ${domain.externalId}, listResults: ${listResults}")
 
             if (listResults.success) {
                 List<Map> apiItems = listResults.recordList as List<Map>
@@ -476,7 +474,7 @@ class MicrosoftDnsProvider implements DNSProvider {
         addList?.each {record ->
             if(record['HostName']) {
                 def addConfig = [networkDomain:new NetworkDomain(id: domain.id), fqdn:NetworkUtility.getDomainRecordFqdn(record['HostName'] as String, domain.fqdn),
-                                 type:record['RecordType']?.toUpperCase(), comments:record.comments, ttl:convertTtlStringToSeconds(record['TimeToLive']),
+                                 type:record['RecordType']?.toUpperCase(), comments:record.comments, ttl:record['TimeToLive'].TotalSeconds,
                                  externalId:record['DistinguishedName'], internalId:record['RecordData'], source:'sync',
                                  recordData:record['RecordData'], content:record['RecordData']]
                 if(addConfig.type == 'SOA' || addConfig.type == 'NS')
@@ -579,7 +577,7 @@ class MicrosoftDnsProvider implements DNSProvider {
 
             if (rpcData?.status == 0) {
                 log.debug("listZones - integration ${integration.name} - rpcData: ${rpcData}")
-                def zoneRecords = parseListSet(rpcData.cmdOut)
+                def zoneRecords = new JsonSlurper().parseText(rpcData.cmdOut)
                 if (zoneFilters) {
                     log.debug("listZones - integration ${integration.name} - Applying glob style zone filters : ${config.zoneFilter} regEx: ${zoneFilters}")
                     def filteredZoneRecords = zoneRecords.collect {zone -> 
@@ -617,7 +615,7 @@ class MicrosoftDnsProvider implements DNSProvider {
             def rpcData = executeCommandScript(integration, command)
             if (rpcData?.status == 0) {
                 rtn.success = true
-                def zoneRecords = parseListSet(rpcData.cmdOut)
+                def zoneRecords = new JsonSlurper().parseText(rpcData.cmdOut)
                 rtn.recordList = zoneRecords
                 log.debug("listRecords - integration ${integration.name} - zone: ${domain.externalId} resourceRecords: ${zoneRecords.size()}")
             }
@@ -755,29 +753,6 @@ class MicrosoftDnsProvider implements DNSProvider {
         return rtn
     }
 
-    private Integer convertTtlStringToSeconds(String ttlInput) {
-        if(ttlInput) {
-            def ttlArgs = ttlInput?.tokenize(':')?.reverse()
-            Integer ttl = 0
-            for(int x =0 ; x<ttlArgs.size();x++) {
-                def ttlVal = ttlArgs[x] ? Double.parseDouble(ttlArgs[x]).intValue() : null
-                if(ttlVal) {
-                    if(x == 0) {
-                        ttl += ttlVal
-                    } else if(x == 1) {
-                        ttl += (ttlVal*60)
-                    } else if(x == 2) {
-                        ttl += (ttlVal * 60 * 60)
-                    } else if(x == 3) {
-                        ttl += (ttlVal * 60 * 60 * 24)
-                    }
-                }
-            }
-            return ttl
-        } else {
-            return 0
-        }
-    }
 
     /**
     * TaskResult exitCode is not always set by the rpc service to the DNS Cmdlet error code
@@ -1125,7 +1100,7 @@ class MicrosoftDnsProvider implements DNSProvider {
             $GetZoneBlock = {
                 $Ret=[PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null}
                 try {   
-                    $Ret.cmdOut=Get-DnsServerZone -ErrorAction Stop | Format-List | Out-String -width 512
+                    $Ret.cmdOut=Get-DnsServerZone -ErrorAction Stop | Select-Object -Property ZoneName | ConvertTo-Json -Compress
                 }
                 catch {
                     $Ret.status = $_.Exception.ErrorData.error_Code
@@ -1144,7 +1119,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                 }
             }
             $ReturnStatus = Invoke-Command @Params
-            $ReturnStatus | ConvertTo-Json -depth 2 -Compress  
+            $ReturnStatus | ConvertTo-Json -Compress  
         '''    
         String runCmd = codeBlock.stripIndent().replace("<%computer%>",computerName)
         log.info("buildGetDnsZoneScript - Building script to Zone records")
@@ -1165,7 +1140,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                 param($zone)
                 $Ret=[PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null}
                 try {   
-                    $Ret.cmdOut=Get-DnsServerResourceRecord -ZoneName $zone -ErrorAction Stop | Format-List | Out-String -width 512
+                    $Ret.cmdOut=Get-DnsServerResourceRecord -ZoneName $zone -ErrorAction Stop | Select-Object -Property RecordData,RecordType,comments,HostName,DistinguishedName,TimeToLive | ConvertTo-Json -Compress
                 }
                 catch {
                     $Ret.status = $_.Exception.ErrorData.error_Code
@@ -1184,7 +1159,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                 }
             }
             $ReturnStatus = Invoke-Command @Params
-            $ReturnStatus | ConvertTo-Json -depth 2 -Compress  
+            $ReturnStatus | ConvertTo-Json -Compress  
         '''    
 
         String runCmd = codeBlock.stripIndent().replace("<%zone%>",zone).replace("<%computer%>",computerName)
