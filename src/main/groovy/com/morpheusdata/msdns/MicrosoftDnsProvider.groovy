@@ -702,7 +702,7 @@ class MicrosoftDnsProvider implements DNSProvider {
         rtn.username = integration.credentialData?.username ?: integration.serviceUsername
         rtn.password = integration.credentialData?.password ?: integration.servicePassword
         rtn.inventoryExisting = config.inventoryExisting
-        rtn.port = integration.servicePort.toInteger()
+        rtn.port = integration.servicePort?.toInteger() ?: 5985
         //rtn.elevated = computerName ? true : false
         rtn.elevated = false // never use the JRuby if possible
         log.debug("getRpcConfig - integration: ${integration.name} - rtn: ${rtn}")
