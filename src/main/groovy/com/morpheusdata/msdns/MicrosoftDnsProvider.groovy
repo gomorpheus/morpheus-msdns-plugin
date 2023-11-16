@@ -432,7 +432,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                 }.observe()
             } else {
                 log.info("cacheZoneRecords - No data to sync for ${domain.externalId}")
-                return Single.just(false)
+                return Single.just(false).toObservable()
             }
         }.doOnError{ e ->
             log.error("cacheZoneRecords error: ${e}", e)
@@ -794,7 +794,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                 rpcData.errOut = [message: "Unable to interpret the Rpc json response ${e.getMessage()}"] 
             }
         } else {
-            log.error("handleTaskResult - MicrosoftDns Rpc result returned no usable data. TaskResult exitCode: ${result.exitCode}")
+            log.error("handleTaskResult - MicrosoftDns Rpc result returned no usable data. TaskResult exitCode: ${result.exitCode} - ${result.data}")
             rpcData.status = 1
             rpcData.cmdOut = null
             rpcData.errOut = [message: "Failed to connect to Remote Service with the credentials provided"]
