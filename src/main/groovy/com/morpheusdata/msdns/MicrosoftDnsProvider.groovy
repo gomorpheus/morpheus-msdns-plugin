@@ -28,6 +28,7 @@ import com.morpheusdata.model.AccountIntegration
 import com.morpheusdata.model.Icon
 import com.morpheusdata.model.NetworkDomain
 import com.morpheusdata.model.NetworkDomainRecord
+import com.morpheusdata.model.NetworkPool
 import com.morpheusdata.model.NetworkPoolServer
 import com.morpheusdata.model.OptionType
 import com.morpheusdata.model.TaskResult
@@ -35,6 +36,7 @@ import com.morpheusdata.model.projection.NetworkDomainIdentityProjection
 import com.morpheusdata.model.projection.NetworkDomainRecordIdentityProjection
 import com.morpheusdata.response.ServiceResponse
 import groovy.util.logging.Slf4j
+import io.reactivex.rxjava3.core.Completable
 import io.reactivex.rxjava3.core.Single
 import io.reactivex.rxjava3.core.Observable
 import org.apache.tools.ant.types.spi.Service
@@ -315,7 +317,6 @@ class MicrosoftDnsProvider implements DNSProvider {
     def cacheZones(AccountIntegration integration, Map opts = [:]) {
         try {
             def listResults = listZones(integration)
-            log.info("Zone List Results: ${listResults}")
             if (listResults.success) {
                 List apiItems = listResults.zoneList as List<Map>
                 Observable<NetworkDomainIdentityProjection> domainRecords = morpheus.network.domain.listIdentityProjections(integration.id)
@@ -402,10 +403,10 @@ class MicrosoftDnsProvider implements DNSProvider {
     def cacheZoneRecords(AccountIntegration integration, Map opts=[:]) {
 
         morpheus.network.domain.list(new DataQuery().withFilters(new DataFilter('refType','AccountIntegration'),new DataFilter('refId',integration.id))).flatMap { NetworkDomain domain ->
+
             def now = new Date()
             def listResults = listRecords(integration,domain)
             log.info("List Zone Records in ${new Date().time - now.time}")
-            log.debug("cacheZoneRecords - domain: {}, listResults: {}",domain.externalId,listResults)
 
             if (listResults.success) {
                 List<Map> apiItems = listResults.recordList as List<Map>
@@ -425,11 +426,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                 }.onAdd { itemsToAdd ->
                     addMissingDomainRecords(domain, itemsToAdd)
                 }.withLoadObjectDetails { List<SyncTask.UpdateItemDto<NetworkDomainRecord,Map>> updateItems ->
-                    Map<Long, SyncTask.UpdateItemDto<NetworkDomainRecord, Map>> updateItemMap = updateItems.collectEntries { [(it.existingItem.id): it]}
-                    return morpheus.network.domain.record.listById(updateItems.collect{it.existingItem.id} as Collection<Long>).map { NetworkDomainRecord domainRecord ->
-                        SyncTask.UpdateItemDto<NetworkDomainRecordIdentityProjection, Map> matchItem = updateItemMap[domainRecord.id]
-                        return new SyncTask.UpdateItem<NetworkDomainRecord,Map>(existingItem:domainRecord, masterItem:matchItem.masterItem)
-                    }
+                    return Observable.fromIterable(updateItems.collect { new SyncTask.UpdateItem<NetworkDomainRecord,Map>(existingItem: it.existingItem,masterItem: it.masterItem) })
                 }.onUpdate { List<SyncTask.UpdateItem<NetworkDomainRecord,Map>> updateItems ->
                     updateMatchedDomainRecords(updateItems)
                 }.observe()
@@ -1139,12 +1136,21 @@ class MicrosoftDnsProvider implements DNSProvider {
      */
     private String buildGetDnsResourceRecordScript(String zone, String computerName) {
 
+
+
         def codeBlock = '''
             $GetZoneRecordBlock = {
                 param($zone)
                 $Ret=[PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null}
-                try {   
-                    $Ret.cmdOut=Get-DnsServerResourceRecord -ZoneName $zone -ErrorAction Stop | Select-Object -Property RecordData,RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}} | ConvertTo-Json -Compress
+                try {
+                    $res = @()
+                    $res += Get-DnsServerResourceRecord -ZoneName $zone -RRType "A" -ErrorAction Stop | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.IPv4Address.toString()}}   
+                    $res += Get-DnsServerResourceRecord -ZoneName $zone -RRType "TXT" -ErrorAction Stop | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.DescriptiveText.toString()}}
+                    $res += Get-DnsServerResourceRecord -ZoneName $zone -RRType "MX" -ErrorAction Stop | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.MailExchange.toString()}}
+                    $res += Get-DnsServerResourceRecord -ZoneName $zone -RRType "CNAME" -ErrorAction Stop | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.HostNameAlias.toString()}}
+                    $res += Get-DnsServerResourceRecord -ZoneName $zone -RRType "PTR" -ErrorAction Stop | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.PtrDomainName.toString()}}
+                    $res += Get-DnsServerResourceRecord -ZoneName $zone -RRType "AAAA" -ErrorAction Stop | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.IPv6Address.toString()}}
+                    $Ret.cmdOut = ConvertTo-Json -Compress $res
                 }
                 catch {
                     $Ret.status = $_.Exception.ErrorData.error_Code
@@ -1164,7 +1170,7 @@ class MicrosoftDnsProvider implements DNSProvider {
             }
             $ReturnStatus = Invoke-Command @Params
             $ReturnStatus | ConvertTo-Json -Compress  
-        '''    
+        '''
 
         String runCmd = codeBlock.stripIndent().replace("<%zone%>",zone).replace("<%computer%>",computerName)
         log.debug("buildGetDnsResourceRecordScript - Building script to get zone resource records for zone ${zone}")
