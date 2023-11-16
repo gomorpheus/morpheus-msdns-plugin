@@ -18,6 +18,8 @@ package com.morpheusdata.msdns
 import com.morpheusdata.core.DNSProvider
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.Plugin
+import com.morpheusdata.core.data.DataFilter
+import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.core.util.ConnectionUtils
 import com.morpheusdata.core.util.HttpApiClient
 import com.morpheusdata.core.util.NetworkUtility
@@ -399,9 +401,7 @@ class MicrosoftDnsProvider implements DNSProvider {
     // Cache Zones methods
     def cacheZoneRecords(AccountIntegration integration, Map opts=[:]) {
 
-        morpheus.network.domain.listIdentityProjections(integration.id).buffer(50).concatMap { Collection<NetworkDomainIdentityProjection> resourceIdents ->
-            return morpheus.network.domain.listById(resourceIdents.collect{it.id})
-        }.concatMap { NetworkDomain domain ->
+        morpheus.network.domain.list(new DataQuery().withFilter(new DataFilter('integration.id',integration.id)).withJoins('integration')).flatMap { NetworkDomain domain ->
             def listResults = listRecords(integration,domain)
             log.debug("cacheZoneRecords - domain: ${domain.externalId}, listResults: ${listResults}")
 
@@ -409,10 +409,10 @@ class MicrosoftDnsProvider implements DNSProvider {
                 List<Map> apiItems = listResults.recordList as List<Map>
 
                 //Unfortunately the unique identification matching for msdns requires the full record for now... so we have to load all records...this should be fixed
-
-                Observable<NetworkDomainRecord> domainRecords = morpheus.network.domain.record.listIdentityProjections(domain,null).buffer(50).concatMap {domainIdentities ->
-                    morpheus.network.domain.record.listById(domainIdentities.collect{it.id})
-                }
+                Observable<NetworkDomainRecord> domainRecords = morpheus.network.domain.record.list(new DataQuery().withFilter(new DataFilter('networkDomain.id',domain.id)).withJoins("networkDomain"))
+//                Observable<NetworkDomainRecord> domainRecords = morpheus.network.domain.record.listIdentityProjections(domain,null).buffer(50).concatMap {domainIdentities ->
+//                    morpheus.network.domain.record.listById(domainIdentities.collect{it.id})
+//                }
                 SyncTask<NetworkDomainRecord, Map, NetworkDomainRecord> syncTask = new SyncTask<NetworkDomainRecord, Map, NetworkDomainRecord>(domainRecords, apiItems)
                 return syncTask.addMatchFunction {  NetworkDomainRecord domainObject, Map apiItem ->
                     (domainObject.externalId == apiItem['DistinguishedName'] && domainObject.internalId == apiItem['RecordData']) ||
@@ -1144,7 +1144,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                 }
             }
             $ReturnStatus = Invoke-Command @Params
-            $ReturnStatus | ConvertTo-Json -depth 2 -Compress  
+            $ReturnStatus | Select-Object -Property ZoneName | ConvertTo-Json -Compress  
         '''    
         String runCmd = codeBlock.stripIndent().replace("<%computer%>",computerName)
         log.info("buildGetDnsZoneScript - Building script to Zone records")
@@ -1184,7 +1184,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                 }
             }
             $ReturnStatus = Invoke-Command @Params
-            $ReturnStatus | ConvertTo-Json -depth 2 -Compress  
+            $ReturnStatus | Select-Object -Property RecordData,comments,HostName,DistinguishedName,TimeToLive | ConvertTo-Json -Compress  
         '''    
 
         String runCmd = codeBlock.stripIndent().replace("<%zone%>",zone).replace("<%computer%>",computerName)
