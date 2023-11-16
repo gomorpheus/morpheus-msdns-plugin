@@ -400,8 +400,10 @@ class MicrosoftDnsProvider implements DNSProvider {
     def cacheZoneRecords(AccountIntegration integration, Map opts=[:]) {
 
         morpheus.network.domain.list(new DataQuery().withFilters(new DataFilter('refType','AccountIntegration'),new DataFilter('refId',integration.id))).flatMap { NetworkDomain domain ->
+            def now = new Date()
             def listResults = listRecords(integration,domain)
-            log.info("cacheZoneRecords - domain: ${domain.externalId}, listResults: ${listResults}")
+            log.info("List Zone Records in ${new Date().time - now.time}")
+            log.debug("cacheZoneRecords - domain: {}, listResults: {}",domain.externalId,listResults)
 
             if (listResults.success) {
                 List<Map> apiItems = listResults.recordList as List<Map>
@@ -474,7 +476,7 @@ class MicrosoftDnsProvider implements DNSProvider {
         addList?.each {record ->
             if(record['HostName']) {
                 def addConfig = [networkDomain:new NetworkDomain(id: domain.id), fqdn:NetworkUtility.getDomainRecordFqdn(record['HostName'] as String, domain.fqdn),
-                                 type:record['RecordType']?.toUpperCase(), comments:record.comments, ttl:record['TimeToLive'].TotalSeconds,
+                                 type:record['RecordType']?.toUpperCase(), comments:record.comments, ttl:record['TimeToLive'],
                                  externalId:record['DistinguishedName'], internalId:record['RecordData'], source:'sync',
                                  recordData:record['RecordData'], content:record['RecordData']]
                 if(addConfig.type == 'SOA' || addConfig.type == 'NS')
@@ -1140,7 +1142,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                 param($zone)
                 $Ret=[PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null}
                 try {   
-                    $Ret.cmdOut=Get-DnsServerResourceRecord -ZoneName $zone -ErrorAction Stop | Select-Object -Property RecordData,RecordType,comments,HostName,DistinguishedName,TimeToLive | ConvertTo-Json -Compress
+                    $Ret.cmdOut=Get-DnsServerResourceRecord -ZoneName $zone -ErrorAction Stop | Select-Object -Property RecordData,RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}} | ConvertTo-Json -Compress
                 }
                 catch {
                     $Ret.status = $_.Exception.ErrorData.error_Code
