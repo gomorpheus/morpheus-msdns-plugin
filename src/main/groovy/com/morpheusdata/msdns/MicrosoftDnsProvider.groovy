@@ -616,8 +616,8 @@ class MicrosoftDnsProvider implements DNSProvider {
             def rpcData = executeCommandScript(integration, command)
             if (rpcData?.status == 0) {
                 rtn.success = true
-                def zoneRecords = new JsonSlurper().parseText(rpcData.cmdOut)
-                rtn.recordList = zoneRecords
+                def zoneRecords = new JsonSlurper().parseText(rpcData?.cmdOut)
+                rtn.recordList = zoneRecords instanceof List ? zoneRecords : [zoneRecords]
                 log.debug("listRecords - integration ${integration.name} - zone: ${domain.externalId} resourceRecords: ${zoneRecords.size()}")
             }
             else {
@@ -1135,41 +1135,62 @@ class MicrosoftDnsProvider implements DNSProvider {
      * values surrounded by <% %> are replace by the corresponding parameters before the command string is returned ready for execution
      */
     private String buildGetDnsResourceRecordScript(String zone, String computerName) {
-
-
+        log.info("TestingZoneBuild: ${zone}")
 
         def codeBlock = '''
             $GetZoneRecordBlock = {
                 param($zone)
-                $Ret=[PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null}
-                try {
-                    $res = @()
-                    $res += Get-DnsServerResourceRecord -ZoneName $zone -RRType "A" -ErrorAction Stop | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.IPv4Address.toString()}}   
-                    $res += Get-DnsServerResourceRecord -ZoneName $zone -RRType "TXT" -ErrorAction Stop | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.DescriptiveText.toString()}}
-                    $res += Get-DnsServerResourceRecord -ZoneName $zone -RRType "MX" -ErrorAction Stop | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.MailExchange.toString()}}
-                    $res += Get-DnsServerResourceRecord -ZoneName $zone -RRType "CNAME" -ErrorAction Stop | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.HostNameAlias.toString()}}
-                    $res += Get-DnsServerResourceRecord -ZoneName $zone -RRType "PTR" -ErrorAction Stop | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.PtrDomainName.toString()}}
-                    $res += Get-DnsServerResourceRecord -ZoneName $zone -RRType "AAAA" -ErrorAction Stop | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.IPv6Address.toString()}}
-                    $Ret.cmdOut = ConvertTo-Json -Compress $res
+                $Ret = [PSCustomObject]@{
+                    status = 0
+                    cmdOut = $null
+                    errOut = $null
                 }
-                catch {
+
+                try {
+                    Set-Alias -Name gdnsr -Value Get-DnsServerResourceRecord
+                    $recordTypes = "A", "TXT", "MX", "CNAME", "PTR", "AAAA", "MX", "NS", "SOA"
+                    $res = foreach ($type in $recordTypes) {
+                        gdnsr -ZoneName $zone -RRType $type | Select-Object -Property RecordType, comments, HostName, DistinguishedName, @{
+                            Name = "TimeToLive"
+                            Expression = { $_.TimeToLive.TotalSeconds }
+                        }, @{
+                            Name = "RecordData"
+                            Expression = {
+                                $rd = $_
+                                switch ($type) {
+                                    "A"     { $rd.RecordData.IPv4Address.ToString() }
+                                    "TXT"   { $rd.RecordData.DescriptiveText.ToString() }
+                                    "MX"    { $rd.RecordData.MailExchange.ToString() }
+                                    "CNAME" { $rd.RecordData.HostNameAlias.ToString() }
+                                    "PTR"   { $rd.RecordData.PtrDomainName.ToString() }
+                                    "AAAA"  { $rd.RecordData.IPv6Address.ToString() }
+                                    "MX"    { $rd.RecordData.MailExchange.toString() }
+                                    "NS"    { $rd.RecordData.NameServer.toString() }
+                                    "SOA"   { $rd.RecordData.ResponsiblePerson.toString() }
+                                }
+                            }
+                        }
+                    }
+                    $Ret.cmdOut = $res | ConvertTo-Json -Compress
+                } catch {
                     $Ret.status = $_.Exception.ErrorData.error_Code
                     $Ret.errOut=$_.Exception.ErrorData | Select-Object -Property errorSource,message, error_Category,error_Code, error_WindowsErrorMessage
                 }
+
                 $Ret
             }
-            $Params = @{ScriptBlock=$GetZoneRecordBlock;ArgumentList="<%zone%>"}
-            $CachedCredFile = Join-Path -Path ([Environment]::GetEnvironmentVariable("LOCALAPPDATA")) -ChildPath "dnsCred.xml"
-	        $computer = "<%computer%>"
+
+            $P = @{ScriptBlock = $GetZoneRecordBlock;ArgumentList = "<%zone%>"}
+            $ccf = Join-Path -Path ([Environment]::GetEnvironmentVariable("LOCALAPPDATA")) -ChildPath "dnsCred.xml"
+            $computer = "<%computer%>"
             if ($computer) {
-                $Params.Add("ComputerName",$computer)
-                if (Test-Path -Path $CachedCredFile) {
-                    $cred = Import-CliXml -Path $CachedCredFile
-                    $Params.Add("Credential",$cred)
+                $P.Add("ComputerName", $computer)
+                if (Test-Path -Path $ccf) {
+                    $cred = Import-CliXml -Path $ccf
+                    $P.Add("Credential", $cred)
                 }
             }
-            $ReturnStatus = Invoke-Command @Params
-            $ReturnStatus | ConvertTo-Json -Compress  
+            (Invoke-Command @P) | ConvertTo-Json -Compress
         '''
 
         String runCmd = codeBlock.stripIndent().replace("<%zone%>",zone).replace("<%computer%>",computerName)
