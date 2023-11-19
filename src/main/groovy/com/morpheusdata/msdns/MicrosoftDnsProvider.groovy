@@ -616,8 +616,8 @@ class MicrosoftDnsProvider implements DNSProvider {
             def rpcData = executeCommandScript(integration, command)
             if (rpcData?.status == 0) {
                 rtn.success = true
-                def zoneRecords = new JsonSlurper().parseText(rpcData.cmdOut)
-                rtn.recordList = zoneRecords
+                def zoneRecords = new JsonSlurper().parseText(rpcData?.cmdOut)
+                rtn.recordList = zoneRecords instanceof List ? zoneRecords : [zoneRecords]
                 log.debug("listRecords - integration ${integration.name} - zone: ${domain.externalId} resourceRecords: ${zoneRecords.size()}")
             }
             else {
@@ -1134,43 +1134,62 @@ class MicrosoftDnsProvider implements DNSProvider {
      * values surrounded by <% %> are replace by the corresponding parameters before the command string is returned ready for execution
      */
     private String buildGetDnsResourceRecordScript(String zone, String computerName) {
-
-
+        log.info("TestingZoneBuild: ${zone}")
 
         def codeBlock = '''
             $GetZoneRecordBlock = {
                 param($zone)
-                $Ret=[PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null}
+                $Ret = [PSCustomObject]@{
+                    status = 0
+                    cmdOut = $null
+                    errOut = $null
+                }
 
                 try {
                     Set-Alias -Name gdnsr -Value Get-DnsServerResourceRecord
-                    $res = @()
-                    $res += gdnsr -ZoneName $zone -RRType "A" | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.IPv4Address.toString()}}   
-                    $res += gdnsr -ZoneName $zone -RRType "TXT" | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.DescriptiveText.toString()}}
-                    $res += gdnsr -ZoneName $zone -RRType "MX" | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.MailExchange.toString()}}
-                    $res += gdnsr -ZoneName $zone -RRType "CNAME" | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.HostNameAlias.toString()}}
-                    $res += gdnsr -ZoneName $zone -RRType "PTR" | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.PtrDomainName.toString()}}
-                    $res += gdnsr -ZoneName $zone -RRType "AAAA" | Select-Object -Property RecordType,comments,HostName,DistinguishedName,@{Name="TimeToLive";Expression={$_.TimeToLive.TotalSeconds}},@{Name="RecordData";Expression={$_.RecordData.IPv6Address.toString()}}
-                    $Ret.cmdOut = ConvertTo-Json -Compress $res
-                }
-                catch {
+                    $recordTypes = "A", "TXT", "MX", "CNAME", "PTR", "AAAA", "MX", "NS", "SOA"
+                    $res = foreach ($type in $recordTypes) {
+                        gdnsr -ZoneName $zone -RRType $type | Select-Object -Property RecordType, comments, HostName, DistinguishedName, @{
+                            Name = "TimeToLive"
+                            Expression = { $_.TimeToLive.TotalSeconds }
+                        }, @{
+                            Name = "RecordData"
+                            Expression = {
+                                $rd = $_
+                                switch ($type) {
+                                    "A"     { $rd.RecordData.IPv4Address.ToString() }
+                                    "TXT"   { $rd.RecordData.DescriptiveText.ToString() }
+                                    "MX"    { $rd.RecordData.MailExchange.ToString() }
+                                    "CNAME" { $rd.RecordData.HostNameAlias.ToString() }
+                                    "PTR"   { $rd.RecordData.PtrDomainName.ToString() }
+                                    "AAAA"  { $rd.RecordData.IPv6Address.ToString() }
+                                    "MX"    { $rd.RecordData.MailExchange.toString() }
+                                    "NS"    { $rd.RecordData.NameServer.toString() }
+                                    "SOA"   { $rd.RecordData.ResponsiblePerson.toString() }
+                                }
+                            }
+                        }
+                    }
+                    $Ret.cmdOut = $res | ConvertTo-Json -Compress
+                } catch {
                     $Ret.status = $_.Exception.ErrorData.error_Code
                     $Ret.errOut=$_.Exception.ErrorData | Select-Object -Property errorSource,message, error_Category,error_Code, error_WindowsErrorMessage
                 }
+
                 $Ret
             }
-            $P = @{ScriptBlock=$GetZoneRecordBlock;ArgumentList="<%zone%>"}
+
+            $P = @{ScriptBlock = $GetZoneRecordBlock;ArgumentList = "<%zone%>"}
             $ccf = Join-Path -Path ([Environment]::GetEnvironmentVariable("LOCALAPPDATA")) -ChildPath "dnsCred.xml"
-	        $computer = "<%computer%>"
+            $computer = "<%computer%>"
             if ($computer) {
-                $P.Add("ComputerName",$computer)
+                $P.Add("ComputerName", $computer)
                 if (Test-Path -Path $ccf) {
                     $cred = Import-CliXml -Path $ccf
-                    $P.Add("Credential",$cred)
+                    $P.Add("Credential", $cred)
                 }
             }
-            $RetStatus = Invoke-Command @P
-            $RetStatus | ConvertTo-Json -Compress  
+            (Invoke-Command @P) | ConvertTo-Json -Compress
         '''
 
         String runCmd = codeBlock.stripIndent().replace("<%zone%>",zone).replace("<%computer%>",computerName)
