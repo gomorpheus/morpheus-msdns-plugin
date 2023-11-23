@@ -19,6 +19,21 @@ A jar will be produced in the `build/lib` folder that can be uploaded into a Mor
 
 Once the plugin is loaded in the environment. Microsoft DNS becomes available in `Infrastructure -> Network -> Integrations`.
 
+## New with v3.0
+
+All Morpheus DNS related Powershell functions are contained in a Powershell script file which is downloaded to the RPC SERVER and staored in the LocalAppData profile for the service account user. The file contents are md5 checked to ensure the file is not tampered with. The module is refreshed from the plugin if the md5 sum does not match.
+The module contains custom function designed to interface with the Plugin via json objects
+
+### Local, WinRm and WMI support
+The Powershell Module contains a function (Test-MorpheusServicePath) which when passed the DNS Server as -Computer parameter determines how and if Morpheus can access DNS Services.
+
+Please see the Morpheus Discussion boards (https://discuss.morpheusdata.com) for details.
+
+### Performance improvements 
+
+- Having the Powershell modules installed on the RPC server offers some performance benefits. As scripts are no longer transferred on each RPC call. 
+- Parsing DNS resource record properties into json is now much faster.
+
 ## New with v2.2.0
 
 - Configure the Dns Integration via the MICROSOFT DNS INTEGRATION dialog. To Add a new integration use Administration -> Integrations  and click + NEW INTEGRATION then select Microsoft DNS from the list.
