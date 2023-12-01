@@ -1238,7 +1238,7 @@ class MicrosoftDnsProvider implements DNSProvider {
             } else {
                 //local,winrm or wmi serviceType
                 // I would like to store it here integration.serviceMode = rpcData.cmdOut?.serviceType
-                setServiceType(integration,rpcData.cmdOut?.serviceType)
+                setServiceType(integration,rpcData.cmdOut?.serviceProfile?.serviceType)
                 integration.setConfigProperty('serviceType',getServiceType(integration))
                 log.info("testDnsService - integration: ${integration.name} - serviceUrl: ${integration.serviceUrl}, servicePath: ${integration.servicePath}, serviceType: ${getServiceType(integration)}. Dns Services tested OK")
                 rtn.success = true
