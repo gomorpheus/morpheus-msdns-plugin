@@ -292,11 +292,11 @@ Function Test-DnsServicePath {
         [ValidateSet("winrm","wmi","local")]
         [String]$ServiceType="wmi",
         [Switch]$UseCachedCredential,
-        [ValidateSet("winrm","agent","sheduletask","unknown")]
+        [ValidateSet("winrm","agent","scheduletask","unknown")]
         [String]$RpcType="unknown"
     )
 
-    #ScriptBlock for performing the Service Tests via Invoke-Command 
+    #ScriptBlock for performing the Service Tests via Invoke-Command
     $testBlock={
         param($Computer=$Null)
 
@@ -420,7 +420,7 @@ Function Test-MorpheusServicePath {
     }
     if ($rpcInfo.cmdOut.isNetwork) {
         $rpcType = "winrm"
-    } elseif ($rpcInfo.cmdOut.isSystem) {
+    } elseif ($rpcInfo.cmdOut.isService) {
         $rpcType = "agent"
     } elseif ($rpcInfo.cmdOut.isBatch) {
         $rpcType = "scheduletask"
