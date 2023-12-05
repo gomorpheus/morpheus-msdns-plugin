@@ -16,6 +16,7 @@
 package com.morpheusdata.msdns
 
 import com.morpheusdata.core.Plugin
+import com.morpheusdata.views.HandlebarsRenderer
 
 /**
  * The entrypoint of the Microsoft DNS Plugin. This is where multiple providers can be registered (if necessary).
@@ -36,6 +37,9 @@ class MicrosoftDnsPlugin extends Plugin {
 		this.pluginProviders.put("microsoft.dns", msdnsProvider)
 		this.setName("Microsoft DNS")
 		this.setAuthor("Stephen Potts")
+		this.setRenderer(new HandlebarsRenderer(this.classLoader))
+		MicrosoftDnsPluginController msDnsApi = new MicrosoftDnsPluginController(this, morpheus)
+		this.controllers.add(msDnsApi)
 	}
 
 	/**

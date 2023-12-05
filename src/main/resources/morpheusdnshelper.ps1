@@ -275,8 +275,7 @@ Function Get-RpcSessionInfo {
             isNetwork=$tokenGroups -contains "NT AUTHORITY\NETWORK";
             isBatch=$tokenGroups -contains "NT AUTHORITY\BATCH";
             isInteractive=$tokenGroups -contains "NT AUTHORITY\INTERACTIVE";
-            isNtlmToken=$tokenGroups -contains "NT AUTHORITY\NTLM Authentication";
-            serviceType=$Null;
+            isNtlmToken=$tokenGroups -contains "NT AUTHORITY\NTLM Authentication"
         }
     }
     catch {
@@ -289,24 +288,27 @@ Function Get-RpcSessionInfo {
 Function Test-DnsServicePath {
     [CmdletBinding()]
     param(
-        [String]$ServiceHost=$null,
+        [String]$ServiceHost=$Null,
         [ValidateSet("winrm","wmi","local")]
         [String]$ServiceType="wmi",
-        [Switch]$UseCachedCredential
+        [Switch]$UseCachedCredential,
+        [ValidateSet("winrm","agent","sheduletask","unknown")]
+        [String]$RpcType="unknown"
     )
 
-    #ScriptBlock for performing the Service Tests
+    #ScriptBlock for performing the Service Tests via Invoke-Command 
     $testBlock={
         param($Computer=$Null)
 
-        # Declare the response PSCustomObject.
+        # Declare the response PSCustomObject properties
         $ret = [PSCustomObject]@{
             status=0;
             cmdOut=[PSCustomObject]@{
+                serviceProfile=$Null;
                 dnsServer=$Null;
-                serviceProfile=$null;
-                session=$null
-                domainSOAServers=$null
+                rpcSession=$Null;
+                serviceSession=$Null;
+                domainSOAServers=$Null
             };
             errOut=$Null
         }
@@ -320,7 +322,7 @@ Function Test-DnsServicePath {
         $principal = [System.Security.Principal.WindowsPrincipal]$winId
         $tokenGroups = $winId.Groups | Foreach-Object {$_.Translate([System.Security.Principal.NTAccount]).toString()}
         $isAdmin=$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-        $ret.cmdOut.session = [PSCustomObject]@{
+        $ret.cmdOut.serviceSession = [PSCustomObject]@{
             userId=$winId.Name;
             computerName=[Environment]::MachineName;
             authenticationType=$winId.AuthenticationType;
@@ -346,11 +348,13 @@ Function Test-DnsServicePath {
         $ret
     } #End $testBlock
 
+    # key details on how sevices are accessed
     $serviceProfile = [PSCustomObject]@{
-        rpcHost=$Null;
-        serviceHost=$Null;
-        serviceType=$Null;
-        useCachedCredential=$false
+        rpcHost=$Null;                # Morpheus connects to the rpcHost
+        rpcType=$RpcType;             # how Morpheus is connecting
+        serviceHost=$Null;            # DNS Services host - may be same as rpcHost (usually a Domain Controller)
+        serviceType=$Null;            # wmi, winrm or local
+        useCachedCredential=$false    # Use credentials to upgrade to Kerberos login
     }
 
     $testParams = @{
@@ -401,22 +405,33 @@ Function Test-DnsServicePath {
 
 
 #Test the connection path to the DNS Services and return details.
-#The rtn.cmdOut is a PSCustomObject containing the results which anre then used by the plugin for servicing DNS
+#The rtn.cmdOut is a PSCustomObject containing the results which are then used by the plugin for servicing DNS
 Function Test-MorpheusServicePath {
     [CmdletBinding()]
     param(
-        $Computer=$null
+        $Computer=$Null
     )
 
     $rtn = [PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null}
+    #rpcInfo - how is Morpheus connecting
     $rpcInfo = Get-RpcSessionInfo
     if ($rpcInfo.status -gt 0) {
         return $rpcInfo
     }
-
+    if ($rpcInfo.cmdOut.isNetwork) {
+        $rpcType = "winrm"
+    } elseif ($rpcInfo.cmdOut.isSystem) {
+        $rpcType = "agent"
+    } elseif ($rpcInfo.cmdOut.isBatch) {
+        $rpcType = "scheduletask"
+    } else {
+        $rpcType = "unknown"
+    }
+    # initial parameters
     $testParams = @{
-        ErrorAction = "Stop";
-        UseCachedCredential = ($rpcInfo.cmdOut.isNetwork -And ($rpcInfo.cmdOut.isNtlmToken -Or $rpcInfo.cmdOut.authenticationType -eq "NTLM"))
+        ErrorAction="Stop";
+        UseCachedCredential=($rpcInfo.cmdOut.isNetwork -And ($rpcInfo.cmdOut.isNtlmToken -Or $rpcInfo.cmdOut.authenticationType -eq "NTLM"));
+        RpcType=$rpcType
     }
 
     if ($Computer) {
@@ -428,16 +443,18 @@ Function Test-MorpheusServicePath {
         $soaServers = Get-AuthoritativeServers
     }
 
-    # Run Test
+    # Run Test 1st test (local or wmi)
     $rtn = Test-DnsServicePath @testParams
     if ($rtn.status -gt 0 -And $Computer) {
-        #try winrm
+        #If no success try winrm
         $testParams.Item("ServiceType") = "winrm"
         $rtn = Test-DnsServicePath @testParams
     }
+
     # Add DomainSOAServers to the response
     $rtn.cmdOut.domainSOAServers = $soaServers.cmdOut
-    # $rtn.cmdOut.serviceType should now be set to winrm, wmi or local
+    # Add the original Morpheus initiated rpcSession to the return object
+    $rtn.cmdOut.rpcSession = $rpcInfo.cmdOut
     $rtn | ConvertTo-Json -Depth 5 -Compress
 }
 
@@ -494,7 +511,7 @@ Function Add-MorpheusDnsRecord {
         try {
             $existingRecord = Get-DnsServerResourceRecord @getparams | Where-Object {$_.RecordData.$dataPropertyName -eq $data}
             if ($existingRecord) {
-               $ret.cmdOut = $existingRecord | Format-List | Out-String -Width 512
+               $ret.cmdOut = $existingRecord
                $ret.status = 9711
                $ret.errOut = [PSCustomObject]@{message="A matching DNS Record already exists"}
                $exists = $true

@@ -54,6 +54,8 @@ class MicrosoftDnsProvider implements DNSProvider {
     // discovered DNS integration service type by integration - value is one of local,winrm,wmi
     // workaround as plugin cant persist integration model
     private Map serviceType
+    // Maintain a serviceProfile for each integration managed by the plugin
+    private Map serviceProfile = [:]
     static DEFAULT_TTL = 3600
 
     MicrosoftDnsProvider(Plugin plugin, MorpheusContext morpheusContext) {
@@ -62,6 +64,29 @@ class MicrosoftDnsProvider implements DNSProvider {
         this.plugin = plugin
         // Store the serviceType - will be moved to Option in future once ServiceResponse honours changes to the integration
         this.serviceType = [:]
+    }
+
+    /**
+     * Gets the rpc service profile for AccountIntegration id
+     * 
+     * Useful for troubleshooting the connection to DNS
+    */
+    ServiceResponse<Map> getIntegrationServiceProfile(Long integrationId) {
+        try {
+            AccountIntegration integration = morpheusContext.getAccountIntegration().get(integrationId).blockingGet()
+            if (integration?.type == "microsoft.dns") {
+                log.info("getIntegrationServiceProfile - Getting Service Profile for ${integration.name}")
+                Map rpcInfo =  getDnsServiceProperties(integration)
+                log.info("getIntegrationServiceProfile - Returning Dns Service properties for ${integration.name} - rpcInfo status : ${rpcInfo.status}")
+                return ServiceResponse.success(rpcInfo)
+            } else {
+                return ServiceResponse.error("AccountIntegration with id ${integrationId} is not a valid Microsoft DNS Integration")
+            }
+        }
+        catch (e) {
+            log.error("getIntegrationServiceProfile - Error accessing service profile for integration with id ${integrationId} - ${e.getMessage()}")
+            return ServiceResponse.error("Failed to load AccountIntegration with id ${integrationId}")
+        }
     }
 
     /**
@@ -840,7 +865,14 @@ class MicrosoftDnsProvider implements DNSProvider {
      * @param computerName
      */
     private getRpcConfig(AccountIntegration integration, String computerName=null) {
-        def credentialService = getMorpheus().getAccountCredential()
+        if (!integration?.credentialLoaded) {
+            //No credentials loaded. Load via credentialService
+            def credentialService = getMorpheus().getServices().getAccountCredential()
+            def cred = credentialService.loadCredentials(integration).getData()
+            log.info("getRpcConfig - Integration: Loading Credential Data via service ${cred}")
+            integration.setCredentialData(cred)
+            integration.setCredentialLoaded(true)          
+        }
         log.debug("getRpcConfig - integration: ${integration.name} - credentialData : ${integration.credentialData}")
         def rtn = [:]
         rtn.host = integration.serviceUrl
@@ -852,30 +884,6 @@ class MicrosoftDnsProvider implements DNSProvider {
         //rtn.servicePath = integration.serviceMode???
         log.debug("getRpcConfig - integration: ${integration.name} - rtn: ${rtn}")
         return rtn
-    }
-
-    private Integer convertTtlStringToSeconds(String ttlInput) {
-        if(ttlInput) {
-            def ttlArgs = ttlInput?.tokenize(':')?.reverse()
-            Integer ttl = 0
-            for(int x =0 ; x<ttlArgs.size();x++) {
-                def ttlVal = ttlArgs[x] ? Double.parseDouble(ttlArgs[x]).intValue() : null
-                if(ttlVal) {
-                    if(x == 0) {
-                        ttl += ttlVal
-                    } else if(x == 1) {
-                        ttl += (ttlVal*60)
-                    } else if(x == 2) {
-                        ttl += (ttlVal * 60 * 60)
-                    } else if(x == 3) {
-                        ttl += (ttlVal * 60 * 60 * 24)
-                    }
-                }
-            }
-            return ttl
-        } else {
-            return 0
-        }
     }
 
     /**
@@ -1203,7 +1211,7 @@ class MicrosoftDnsProvider implements DNSProvider {
         if (integration.servicePath) {
             try {
                 //Cache Credentials if using an intermediate server
-                log.info("testDnsService - integration: ${integration.name} - Securely caching credential on ${integration.serviceUrl} for onward use on ${integration.servicePath}")
+                log.info("testDnsService - integration: ${integration.name} - Caching credential on host ${integration.serviceUrl} for onward use on ${integration.servicePath}")
                 command = buildCacheCredentialScript(commandOpts.username,commandOpts.password)
                 rpcData = executeCommandScript(integration,command)
                 if (rpcData?.status > 0) {
@@ -1212,7 +1220,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                     rtn.msg = "Failed to securely cache credentials - error: ${rpcData?.errOut?.message}"
                     return rtn
                 } else {
-                    log.info("testDnsService - integration: ${integration.name} - Testing access to Dns Services on ${computerName} via ${integration.serviceUrl} using cached credentials")
+                    log.info("testDnsService - integration: ${integration.name} - Credentials securely cached on host ${integration.serviceUrl}")
                 }
             }
             catch (e) {
