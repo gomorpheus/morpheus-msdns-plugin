@@ -87,12 +87,15 @@ class MicrosoftDnsPluginController implements PluginController {
             catch (e) {
                 integrationId = 0
             }
-            if (integrationId >0) {
+            if (integrationId > 0) {
                 ServiceResponse<Map> serviceInfo = provider.getIntegrationServiceProfile(integrationId)
                 log.debug("View Controller got ServiceResponse : ${serviceInfo}")
-                if (serviceInfo.success) {
+                if (serviceInfo) {
                     log.info("testService - got Success Response")
                     dataModel.object.integrationId = integrationId
+                    dataModel.object.success = serviceInfo.success
+                    dataModel.object.msg = serviceInfo.msg
+                    dataModel.object.error = JsonOutput.prettyPrint(JsonOutput.toJson(serviceInfo.getErrors()))
                     dataModel.object.integrationDetails = "Discovered service profile for Microsoft DNS integration : ${integrationId}"
                     dataModel.object.rpcInfo = JsonOutput.prettyPrint(JsonOutput.toJson(serviceInfo.data))
                 } else {

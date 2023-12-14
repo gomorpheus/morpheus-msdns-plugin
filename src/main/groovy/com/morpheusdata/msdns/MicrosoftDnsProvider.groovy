@@ -19,24 +19,20 @@ import com.morpheusdata.core.DNSProvider
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.Plugin
 import com.morpheusdata.core.util.ConnectionUtils
-import com.morpheusdata.core.util.HttpApiClient
 import com.morpheusdata.core.util.NetworkUtility
 import com.morpheusdata.core.util.SyncTask
 import com.morpheusdata.model.AccountIntegration
 import com.morpheusdata.model.Icon
 import com.morpheusdata.model.NetworkDomain
 import com.morpheusdata.model.NetworkDomainRecord
-import com.morpheusdata.model.NetworkPoolServer
 import com.morpheusdata.model.OptionType
-import com.morpheusdata.model.TaskResult
 import com.morpheusdata.model.projection.NetworkDomainIdentityProjection
 import com.morpheusdata.model.projection.NetworkDomainRecordIdentityProjection
 import com.morpheusdata.response.ServiceResponse
 import groovy.util.logging.Slf4j
 import io.reactivex.Single
 import io.reactivex.Observable
-import org.apache.tools.ant.types.spi.Service
-import groovy.json.JsonSlurper
+
 import java.util.regex.*
 
 /**
@@ -51,34 +47,36 @@ class MicrosoftDnsProvider implements DNSProvider {
 
     MorpheusContext morpheusContext
     Plugin plugin
-    // discovered DNS integration service type by integration - value is one of local,winrm,wmi
-    // workaround as plugin cant persist integration model
-    private Map serviceType
-    // Maintain a serviceProfile for each integration managed by the plugin
-    private Map serviceProfile = [:]
+    MicrosoftDnsPluginRpcService rpcService
     static DEFAULT_TTL = 3600
 
     MicrosoftDnsProvider(Plugin plugin, MorpheusContext morpheusContext) {
         log.info("MicrosoftDnsProvider: Constructor called")
         this.morpheusContext = morpheusContext
         this.plugin = plugin
-        // Store the serviceType - will be moved to Option in future once ServiceResponse honours changes to the integration
-        this.serviceType = [:]
+        this.rpcService = new MicrosoftDnsPluginRpcService(morpheusContext)
     }
 
     /**
-     * Gets the rpc service profile for AccountIntegration id
+     * Gets the rpc and service profile for AccountIntegration id
      * 
      * Useful for troubleshooting the connection to DNS
     */
-    ServiceResponse<Map> getIntegrationServiceProfile(Long integrationId) {
+    ServiceResponse getIntegrationServiceProfile(Long integrationId) {
         try {
-            AccountIntegration integration = morpheusContext.getAccountIntegration().get(integrationId).blockingGet()
+            //AccountIntegration integration = morpheusContext.getAccountIntegration().get(integrationId).blockingGet()
+            AccountIntegration integration = getMorpheus().getAsync().getAccountIntegration().get(integrationId).blockingGet()
             if (integration?.type == "microsoft.dns") {
                 log.info("getIntegrationServiceProfile - Getting Service Profile for ${integration.name}")
-                Map rpcInfo =  getDnsServiceProperties(integration)
-                log.info("getIntegrationServiceProfile - Returning Dns Service properties for ${integration.name} - rpcInfo status : ${rpcInfo.status}")
-                return ServiceResponse.success(rpcInfo)
+                if (!integration?.credentialLoaded) {
+                    //No credentials loaded. Load via credentialService
+                    def credentialService = getMorpheus().getServices().getAccountCredential()
+                    def cred = credentialService.loadCredentials(integration).getData()
+                    log.info("getIntegrationServiceProfil - Integration: Loading Credential Data via service ${cred}")
+                    integration.setCredentialData(cred)
+                    integration.setCredentialLoaded(true)
+                }
+                return testDnsServiceProfile(integration)
             } else {
                 return ServiceResponse.error("AccountIntegration with id ${integrationId} is not a valid Microsoft DNS Integration")
             }
@@ -104,80 +102,74 @@ class MicrosoftDnsProvider implements DNSProvider {
         log.debug("createRecord - Request record: ${record.getProperties()}")
         log.debug("createRecord - Request opts: ${opts}")
         log.info("createRecord - integration ${integration.name} - Received request to create resource record")
+
         ServiceResponse<NetworkDomainRecord> validateRecord = validateDnsRecord(record)
-        if (validateRecord.success) {
-            ServiceResponse<NetworkDomainRecord> addResult = new ServiceResponse<NetworkDomainRecord>(true,null,null,record)
-            Boolean createPtrRecord = (integration.serviceFlag == null || integration.serviceFlag)
-            String zone = record.networkDomain?.name // DNS Zone 
-            String computerName = integration.servicePath ?: "" // DnsServer if going via a service box
-            String serviceType = getServiceType(integration) // How to access Dns Service for this integration
-            try {
-                String command = buildAddDnsRecordScript(record.type,record.name,zone,record.content,record.ttl,createPtrRecord,computerName, serviceType)
-                def rpcData = executeCommandScript(integration, command)
-                if (!rpcData) {
-                    log.error("createRecord - integration ${integration.name} - Unable to determine rpcData from Dns Services")  
-                    addResult.success = false
-                    addResult.error("Unable to determine rpcData from Dns Services - check Credentials are valid")
-                    return addResult
-                }
+        if (!validateRecord.success) {
+            // Failed validation
+            return validateRecord
+        }
+
+        ServiceResponse rpcResult
+        ServiceResponse<NetworkDomainRecord> addResult = ServiceResponse.prepare()
+        def config = integration.getConfigMap()
+        String computerName = integration.servicePath ?: "" // DnsServer if going via a service box
+        String serviceType = config?.serviceType
+        Boolean createPtrRecord = (integration.serviceFlag == null || integration.serviceFlag)
+        String zone = record.networkDomain?.name // DNS Zone
+
+        try {
+            String command = MicrosoftDnsPluginHelper.buildAddDnsRecordScript(record.type, record.name, zone, record.content, record.ttl, createPtrRecord, computerName, serviceType)
+            rpcResult = rpcService.executeCommand(command, integration)
+        }
+        catch (e) {
+            log.error("createRecord - integration ${integration.name} raised exception error: ${e.getMessage()}")
+            return ServiceResponse.error("Failed to create DNS record via Integration ${integration.name} - exception ${e.getMessage()}")
+        }
+        if (rpcResult.success) {
+            def rpcData = rpcResult.getData()
+            if (rpcData) {
+                //got response from DNS check rpcData.status
                 log.info("createRecord - integration ${integration.name} : returned rpcData : ${rpcData}")
-                switch (rpcData.status) {
-                    case [0, 9715] :
-                        // 9715 Fwd created OK failed to create PTR
-                        // 0 Created OK
-                        addResult.success = true
-                        addResult.msg = rpcData.errOut?.message ?: "DNS record created successfully"
-                        break
-                    default :
-                        // Fail all other error codes including 9711 record exists 
-                        log.warn("createRecord - integration ${integration.name} - Failed to create DNS Resource Record ${rpcData}")
-                        addResult.success = false
-                        addResult.error = rpcData.errOut?.message ?: "Failed to create DNS Resource Record"
-                        addResult.data = record  
-                        return addResult                
-                        break
-                }
-                // On success the rpcData.cmdOut will contain the DNS Record created
-                if (rpcData.cmdOut) {
-                    def returnedDnsRecords = rpcData.cmdOut
+                if (rpcData?.status == 0 || rpcData?.status == 9715) {
+                    // good result 9715 means fwd created but PTR failed
+                    def returnedDnsRecords = rpcData?.cmdOut
                     log.debug("createRecord - Rpc Process returned matching newDnsRecords : ${returnedDnsRecords}")
                     def newDnsRecord = returnedDnsRecords.find {(it.recordData.startsWithIgnoreCase(record.content))}
                     if (newDnsRecord) {
-                        // update name and recordData from confirmed response
-                        def recordData = newDnsRecord.recordData
+                        log.info("createRecord - integration ${integration.name} : rpcData returned new record ${newDnsRecord}")
+                        //Update record data from the confirmed response returned from DNS
                         record.name = newDnsRecord.hostName
-                        record.internalId = recordData
+                        record.internalId = newDnsRecord.recordData
                         record.externalId = newDnsRecord.distinguishedName
-                        record.content = recordData
-                        record.recordData = recordData
-                        log.info("createRecord - integration ${integration.name} - Successfully created ${record.type} record - host: ${record.name}, zone: ${zone}, data: ${recordData}")
+                        record.content = newDnsRecord.recordData
+                        record.recordData = newDnsRecord.recordData
+                        log.info("createRecord - integration ${integration.name} - Successfully created ${record.type} record - host: ${record.name}, zone: ${zone}, data: ${record.recordData}")
                         addResult.success = true
-                        addResult.msg = "Successfully created ${record.type} record ${record.name} in zone ${zone} data ${recordData}"
+                        addResult.msg = "Successfully created ${record.type} record ${record.name} in zone ${zone} data ${record.recordData}"
                         addResult.data = record
                     } else {
-                        log.warn("createRecord - integration ${integration.name} - Failed to confirm Resource Record was created as requested")
                         addResult.success = false
-                        addResult.error = "Failed to confirm Resource Record was created as Requested"
-                        addResult.data = record                     
-                    } 
+                        addResult.error = "Failed to verify that the record was created via the DNS Services"
+                        addResult.data = record
+                    }
                 } else {
+                    // rpc returned error non-zero code
+                    log.warn("createRecord - integration ${integration.name} - Failed to create DNS Resource Record ${rpcData}")
                     addResult.success = false
-                    addResult.error = "Failed to verify the record properties with the DNS Service"
-                    addResult.data = record                    
+                    addResult.error = rpcData.errOut?.message ?: "Failed to create DNS Resource Record"
+                    addResult.data = record
                 }
-                return addResult 
-            } 
-            catch(e) {
-                log.error("createRecord - integration ${integration.name} Adding DNS - Exception Raised : ${e.getMessage()}")
+            } else {
+                log.error("createRecord - integration ${integration.name} - Unable to determine rpcData from Dns Services")
                 addResult.success = false
-                addResult.error = e.getMessage()
-                addResult.data = record    
-                return addResult                
+                addResult.error = rpcData.errOut?.message ?: "Unable to determine rpc response from Dns Services"
+                addResult.data = record
             }
+            return addResult
         } else {
-            log.error("createRecord - integration ${integration.name} - DNS Record failed validation. ServiceResponse:  ${validateRecord}")
-            return validateRecord
-        } 
+            //rpc call failed
+            return rpcResult
+        }
     }
 
     /**
@@ -195,53 +187,55 @@ class MicrosoftDnsProvider implements DNSProvider {
         log.debug("deleteRecord - Request record: ${record.getProperties()}")
         log.debug("deleteRecord - Request opts: ${opts}")
         log.info("deleteRecord - integration ${integration.name} - Received request to delete resource record")
-        ServiceResponse<NetworkDomainRecord> deleteResult = new ServiceResponse<NetworkDomainRecord>(true,null,null,record)
-
+        ServiceResponse rpcResult
+        ServiceResponse<NetworkDomainRecord> deleteResult = ServiceResponse.prepare()
+        def config = integration.getConfigMap()
+        String computerName = integration.servicePath ?: "" // DnsServer if going via a service box
+        String serviceType = config?.serviceType
+        String rrType = record.type
+        String fqdn = record.fqdn
+        String name = record.name
+        String recordData = record.recordData
+        String zone = record.networkDomain.name
         try {
-            String rrType = record.type
-            String fqdn = record.fqdn
-            String name = record.name
-            String recordData = record.recordData
-            String zone = record.networkDomain.name
-
-            String computerName = integration.servicePath ?: "" // DnsServer if going via a service box
-            String serviceType = getServiceType(integration) // How to access Dns Service for this integration
-            String command = buildRemoveDnsServerRecordScript(rrType,name,zone,recordData,computerName,serviceType)
-            def rpcData = executeCommandScript(integration, command)
-            if (!rpcData) {
+            String command = MicrosoftDnsPluginHelper.buildRemoveDnsServerRecordScript(rrType,name,zone,recordData,computerName,serviceType)
+            rpcResult = rpcService.executeCommand(command, integration)
+        }
+        catch (e) {
+            log.error("createRecord - integration ${integration.name} raised exception error: ${e.getMessage()}")
+            return ServiceResponse.error("Failed to create DNS record via Integration ${integration.name} - exception ${e.getMessage()}")
+        }
+        if (rpcResult.success) {
+            def rpcData = rpcResult.getData()
+            if (rpcData) {
+                log.info("deleteRecord - integration ${integration.name} : rpcData : ${rpcData}")
+                switch (rpcData.status) {
+                    case 9714 :
+                        //9714 DNS Record does not Exist - return success response to have Morpheus delete its copy
+                        deleteResult.success = true
+                        deleteResult.msg = rpcData.errOut?.message
+                        log.warn("deleteRecord - integration ${integration.name} - Record does not exist in DNS - removing Morpheus copy")
+                        break
+                    case 0 :
+                        deleteResult.success = true
+                        deleteResult.msg = "Successfully removed ${rrType} record - host: ${name}, zone: ${zone}, data: ${recordData}"
+                        log.info("deleteRecord - integration: ${integration.name} - Successfully removed ${rrType} record - host: ${name}, zone: ${zone}, data: ${recordData}")
+                        break
+                    default :
+                        deleteResult.success = false
+                        deleteResult.addError(rpcData.errOut?.message)
+                        log.error("deleteRecord - integration: ${integration.name} - Error removing ${rrType} record - host: ${name}, zone: ${zone}, data: ${recordData} - errOut: ${rpcData.errOut}")
+                        break
+                }
+            } else {
                 log.error("deleteRecord - integration: ${integration.name} - Unable to determine rpcData from Dns Services")
                 deleteResult.success = false
                 deleteResult.addError("Unable to determine rpcData returned from Dns Services")
-                return deleteResult
             }
-            log.info("deleteRecord - integration ${integration.name} : rpcData : ${rpcData}")
-            switch (rpcData.status) {
-                case 9714 :
-                    //9714 DNS Record does not Exist - return success response to have Morpheus delete its copy
-                    deleteResult.success = true
-                    deleteResult.msg = rpcData.errOut.message
-                    log.warn("deleteRecord - integration ${integration.name} - Record does not exist in DNS - removing Morpheus copy")
-                    return deleteResult
-                    break
-                case 0 :
-                    deleteResult.success = true
-                    deleteResult.msg = "Successfully removed ${rrType} record - host: ${name}, zone: ${zone}, data: ${recordData}"
-                    log.info("deleteRecord - integration: ${integration.name} - Successfully removed ${rrType} record - host: ${name}, zone: ${zone}, data: ${recordData}")
-                    return deleteResult
-                    break
-                default :
-                    deleteResult.success = false
-                    deleteResult.addError(rpcData.errOut.message)
-                    log.error("deleteRecord - integration: ${integration.name} - Error removing ${rrType} record - host: ${name}, zone: ${zone}, data: ${recordData} - errOut: ${rpcData.errOut}")
-                    return deleteResult
-                    break
-            }         
-        } 
-        catch(e) {
-            log.error("deleteRecord - integration: ${integration.name} error: ${e}", e)
-            deleteResult.success = false
-            deleteResult.addError("System Error removing Microsoft DNS Record ${record.name} - ${e.getMessage()}")            
             return deleteResult
+        } else {
+            //rpc call failed use ServiceResponse from rpc call to report error
+            return rpcResult
         }
     }
 
@@ -254,17 +248,20 @@ class MicrosoftDnsProvider implements DNSProvider {
     @Override
     void refresh(AccountIntegration integration) {
         try {
-            def rpcConfig = getRpcConfig(integration)
-            def hostOnline = ConnectionUtils.testHostConnectivity(rpcConfig.host, rpcConfig.port ?: 5985, false, true, null)
-            log.info("refresh - integration ${integration.name} - checking the integration is online - ${rpcConfig.host} - ${hostOnline}") 
-            if(hostOnline) {
+            Map integrationConfig = integration.getConfigMap()
+            // Are we using Agent or winRm for transport
+            String rpcTransport = (integrationConfig?.agentRpc && integrationConfig?.agentRpc == "on") ? "agent" : "winrm"
+            ServiceResponse rpcTest = testRpcConnection(integration)
+            log.info("refresh - integration ${integration.name} - checking the integration is online - ${integration.serviceUrl} - ${rpcTest.success}")
+            if(rpcTest.success) {
                 ServiceResponse testDns = testDnsService(integration)
                 if (testDns.success) {
                     Date now = new Date()
                     cacheZones(integration)
                     cacheZoneRecords(integration)
                     log.info("refresh - integration: ${integration.name} - Sync Completed in ${new Date().time - now.time}ms")
-                    getMorpheus().getIntegration().updateAccountIntegrationStatus(integration, AccountIntegration.Status.ok).subscribe().dispose()
+                    getMorpheus().getAsync().getIntegration().updateAccountIntegrationStatus(integration, AccountIntegration.Status.ok).subscribe().dispose()
+                    //getMorpheus().getIntegration().updateAccountIntegrationStatus(integration, AccountIntegration.Status.ok).subscribe().dispose()
                 } else {
                     log.warn("refresh - integration: ${integration.name} - Cannot access DNS Services via integration. Error : ${testDns}")
                     getMorpheus().getIntegration().updateAccountIntegrationStatus(integration, AccountIntegration.Status.error, "Microsoft DNS integration ${integration.name} failed Service Tests")
@@ -290,14 +287,12 @@ class MicrosoftDnsProvider implements DNSProvider {
      */
     @Override
     ServiceResponse verifyAccountIntegration(AccountIntegration integration, Map opts) {
-
-        ServiceResponse<AccountIntegration> verify = new ServiceResponse(false,null,null,integration)
-        String computerName
-        String command
-
+        ServiceResponse<AccountIntegration> verify = ServiceResponse.prepare(integration)
+        Map config = integration.getConfigMap()
         // config.zoneFilter is the glob style filter for importing zones
-        // config.serviceType will be maintained by the plugin (local,winrm,wmi)
-        def config = integration.getConfigMap()
+        // config.serviceType - how to access DNS Service. One of "local", "winrm" or "wmi"
+        // config.agentRpc - Use a Morpheus Agent configured with a service account for the rpc transport
+        String rpcTransport = (config?.agentRpc && config?.agentRpc == "on") ? "agent" : "winrm"
         //def credentialService = morpheusContext.getAccountCredential()
         log.debug("verifyAccountIntegration - Validating integration: ${integration.getProperties()} - opts: ${opts}")
         log.info("verifyAccountIntegration - integration: ${integration.name} - serviceUrl: ${integration.serviceUrl}, servicePath: ${integration.serviceUrl}, config: ${config}")
@@ -323,18 +318,37 @@ class MicrosoftDnsProvider implements DNSProvider {
                     }
                 }
             }
+            if (integration.servicePath) {
+                if (["winrm","wmi"].find {it == config.serviceType?.toLowerCase()} == null) {
+                    verify.errors["serviceType"] = "Service type must be wmi or winrm"
+                }
+            } else {
+                if (config.serviceType != "local") {
+                    verify.errors["serviceType"] = "Service type must be local when not using an Intermediate Server"
+                }
+            }
             if (verify.errors.size() > 0) {
                 // Errors on form - return these errors now
                 log.error("verifyAccountIntegration - integration: ${integration.name}. Form validation errors while Adding Integration: ${verify.errors}")
                 verify.success = false
                 return verify
             }
-            // Validate connectivity to serviceUrl over WinRM - return immediately on a fail
-            log.info("verifyAccountIntegration - integration: ${integration.name} - checking winRm on serviceUrl: ${integration.serviceUrl}")
-            def serviceHostOnline = ConnectionUtils.testHostConnectivity(integration.serviceUrl, 5985, false, true, null)
-            if (!serviceHostOnline) {
-                log.warn("verifyAccountIntegration - integration: ${integration.name} - no winRm connectivity to serviceUrl: ${integration.serviceUrl}")
-                verify.errors["serviceUrl"] = "serviceUrl ${integration.serviceUrl} not reachable over WinRM (port 5985)"
+            // Validate connectivity to serviceUrl over WinRM if rpcType is winrm - return immediately on a fail
+            if (rpcTransport == "winrm") {
+                def port = integration.servicePort ?: 5985
+                def serviceHostOnline = ConnectionUtils.testHostConnectivity(integration.serviceUrl, port, false, true, null)
+                if (!serviceHostOnline) {
+                    log.warn("verifyAccountIntegration - integration: ${integration.name} - no winRm connectivity to serviceUrl: ${integration.serviceUrl}")
+                    verify.errors["serviceUrl"] = "serviceUrl ${integration.serviceUrl} not reachable over WinRM (port 5985)"
+                    verify.success = false
+                    return verify
+                }
+            }
+            //Quickly test the rpcProcess before conducting a more thorough test of DNS Services
+            ServiceResponse rpcTest = testRpcConnection(integration)
+            log.info("verifyAccountIntegration - integration: ${integration.name} : $rpcTest.data")
+            if (!rpcTest.success) {
+                verify.errors["serviceUrl"] = "the rpc connection to ${integration.serviceUrl} using ${rpcTransport} has failed. Check Credentials and/or Agent status"
                 verify.success = false
                 return verify
             }
@@ -372,10 +386,9 @@ class MicrosoftDnsProvider implements DNSProvider {
      // Cache Zones methods
     def cacheZones(AccountIntegration integration, Map opts = [:]) {
         try {
-            def listResults = listZones(integration)
-
+            ServiceResponse listResults = listZones(integration)
             if (listResults.success) {
-                List apiItems = listResults.zoneList as List<Map>
+                List apiItems = listResults.getData() as List<Map>
                 Observable<NetworkDomainIdentityProjection> domainRecords = morpheus.network.domain.listIdentityProjections(integration.id)
 
                 SyncTask<NetworkDomainIdentityProjection,Map,NetworkDomain> syncTask = new SyncTask(domainRecords, apiItems as Collection<Map>)
@@ -417,6 +430,8 @@ class MicrosoftDnsProvider implements DNSProvider {
             log.info("Adding Zone: ${networkDomain}")
             return networkDomain
         }
+        //TODO Update
+        //getMorpheus().getAsync().getNetwork().getDomain().create(integration.id, missingZonesList).blockingGet()
         morpheus.network.domain.create(integration.id, missingZonesList).blockingGet()
     }
 
@@ -451,6 +466,7 @@ class MicrosoftDnsProvider implements DNSProvider {
             }
         }
         if(domainsToUpdate.size() > 0) {
+            //TODO Update
             morpheus.network.domain.save(domainsToUpdate).blockingGet()
         }
     }
@@ -462,14 +478,12 @@ class MicrosoftDnsProvider implements DNSProvider {
         getMorpheus().getNetwork().getDomain().listIdentityProjections(integration.id).buffer(50).flatMap { Collection<NetworkDomainIdentityProjection> resourceIdents ->
             return getMorpheus().getNetwork().getDomain().listById(resourceIdents.collect{it.id})
         }.flatMap { NetworkDomain domain ->
-            def listResults = listRecords(integration,domain)
+            ServiceResponse listResults = listRecords(integration,domain)
             log.debug("cacheZoneRecords - domain: ${domain.externalId}, listResults: ${listResults}")
 
             if (listResults.success) {
-                List<Map> apiItems = listResults.recordList as List<Map>
-
+                List<Map> apiItems = listResults.getData() as List<Map>
                 //Unfortunately the unique identification matching for msdns requires the full record for now... so we have to load all records...this should be fixed
-
                 Observable<NetworkDomainRecord> domainRecords = getMorpheus().getNetwork().getDomain().getRecord().listIdentityProjections(domain,null).buffer(50).flatMap {domainIdentities ->
                     getMorpheus().getNetwork().getDomain().getRecord().listById(domainIdentities.collect{it.id})
                 }
@@ -552,6 +566,7 @@ class MicrosoftDnsProvider implements DNSProvider {
             }
 
         }
+        //TODO update
         morpheus.network.domain.record.create(domain,records).blockingGet()
     }
 
@@ -574,6 +589,24 @@ class MicrosoftDnsProvider implements DNSProvider {
                     displayOrder: 0
                 ),
                 new OptionType(
+                    code: 'accountIntegration.microsoft.dns.agentRpc',
+                    name: 'agentRpc',
+                    inputType: OptionType.InputType.CHECKBOX,
+                    category:'accountIntegration.microsoft.dns',
+                    fieldName:'agentRpc',
+                    fieldLabel:'Use Agent for Rpc',
+                    fieldContext:'config',
+                    required:false,
+                    enabled:true,
+                    editable:true,
+                    global:false,
+                    placeHolder:null,
+                    helpBlock:'Use Morpheus agent for Rpc connection, Agent should LogOn as Service Account',
+                    defaultValue:'off',
+                    custom:false,
+                    displayOrder:1
+                ),
+                new OptionType(
                     code: 'accountIntegration.microsoft.dns.credentials', 
                     name: 'Credentials', 
                     inputType: OptionType.InputType.CREDENTIAL, 
@@ -581,7 +614,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                     fieldLabel: 'Credentials', 
                     fieldContext: 'credential', 
                     required: true, 
-                    displayOrder: 1, 
+                    displayOrder: 10,
                     defaultValue: 'local',
                     optionSource: 'credentials',
                     config: '{"credentialTypes":["username-password"]}'
@@ -594,7 +627,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                     fieldLabel: 'Username', 
                     fieldContext: 'domain', 
                     required: true, 
-                    displayOrder: 2,
+                    displayOrder: 20,
                     localCredential: true
                 ),
                 new OptionType(
@@ -605,7 +638,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                     fieldLabel: 'Password', 
                     fieldContext: 'domain', 
                     required: true, 
-                    displayOrder: 3,
+                    displayOrder: 30,
                     localCredential: true
                 ),
                 new OptionType(
@@ -625,6 +658,24 @@ class MicrosoftDnsProvider implements DNSProvider {
                     defaultValue:null, 
                     custom:false, 
                     displayOrder:75
+                ),
+                new OptionType(
+                    code:'accountIntegration.microsoft.dns.serviceType',
+                    inputType: OptionType.InputType.TEXT,
+                    name:'serviceType',
+                    category:'accountIntegration.microsoft.dns',
+                    fieldName:'serviceType',
+                    fieldLabel:'Service Type',
+                    fieldContext:'config',
+                    required:false,
+                    enabled:true,
+                    editable:true,
+                    global:false,
+                    placeHolder:'choose 1 of wmi, winrm or local',
+                    helpBlock:'How should the RPC Server access DNS Services on the DNS Server',
+                    defaultValue:'local',
+                    custom:false,
+                    displayOrder:76
                 ),
                 new OptionType(
                     code:'accountIntegration.microsoft.dns.serviceFlag', 
@@ -656,7 +707,6 @@ class MicrosoftDnsProvider implements DNSProvider {
                     fieldContext:'config',
                     displayOrder: 70
                 )
-                // TODO: For future release Store the serviceType (local,winrm,wmi) - Use a HIDDEN Option type                          
         ]
     }
 
@@ -710,233 +760,119 @@ class MicrosoftDnsProvider implements DNSProvider {
         return "Microsoft DNS"
     }
 
-    // Getters and Setters for storage of serviceType by integration ID
-    def getServiceType(AccountIntegration integration) {
-        if (this.serviceType.containsKey(integration.id)) {
-            return this.serviceType.get(integration.id)
-        } else {
-            log.error("getServiceType - Integration ${integration.name} with id: ${integration.id} Requires a Service Type. Defaulting to local. Please re-save the integration to set a service type")
-            return "local"
-        }
-    }
-
-    def setServiceType(AccountIntegration integration, String serviceType) {
-        this.serviceType.put(integration.id,serviceType)
-    }
-
-    def listZones(AccountIntegration integration) {
-
-        def rtn = [success:false, zoneList:[]]
+    /**
+     * Discovers the Dns Zones for this integration
+     *
+     * @param AccountIntegration integration
+     * @return ServiceResponse with list of discovered Zones
+     */
+    ServiceResponse listZones(AccountIntegration integration) {
+        ServiceResponse rpcCall
+        ServiceResponse collector
         def zoneFilters //holds an array of RegEx patterns. Zones matching any filter will be imported
         def config = integration.getConfigMap()
-        zoneFilters = config.zoneFilter ? config.zoneFilter.tokenize(",").collect {makeZoneFilterRegex(it)} : null 
-        
-        try {
-            String computerName = integration.servicePath ?: "" // DnsServer if going via a service box
-            String serviceType = getServiceType(integration) // How to access Dns Service for this integration            
-            String command = buildGetDnsZoneScript(computerName,serviceType)
-            def rpcData = executeCommandScript(integration, command)
+        zoneFilters = config.zoneFilter ? config.zoneFilter.tokenize(",").collect { makeZoneFilterRegex(it) } : null
 
-            if (rpcData?.status == 0) {
-                log.debug("listZones - integration ${integration.name} - rpcData: ${rpcData}")
-                def zoneRecords = rpcData.cmdOut
-                if (zoneFilters) {
-                    log.info("listZones - integration ${integration.name} - Applying glob style zone filters : ${config.zoneFilter} regEx: ${zoneFilters}")
-                    def filteredZoneRecords = zoneRecords.collect {zone -> 
-                        // Does this zone name match any of the import zoneFilters
-                        if (zoneFilters.find {(zone.zoneName ==~ it)}) {
-                            log.info("listZones - integration ${integration.name} - found matching zone: {$zone.zoneName}")
-                            return zone
-                        } else {
-                            log.warn("listZones - integration ${integration.name} - Skipping non-matching zone: {$zone.zoneName}")
-                        }                      
-                    }.findAll()                
-                    rtn.zoneList = filteredZoneRecords
-                    rtn.success = true
-                } else {
-                    log.info("listZones - integration ${integration.name} - No Zone filter - importing all zones")
-                    rtn.zoneList = zoneRecords
-                    rtn.success = true
-                }
-            } else {
-                log.error("listZones - integration ${integration.name} - Failed to get Dns Zone list status: ${rpcData.status} - details ${rpcData.errOut}")
-            }
-        } catch(e) {
-            log.error("listZones  - integration ${integration.name} raised exception error: ${e.getMessage()}")
+        try {
+            String serviceType = config.serviceType
+            rpcCall = rpcService.executeCommand(MicrosoftDnsPluginHelper.buildGetDnsZoneScript(integration.servicePath, serviceType), integration)
         }
-        return rtn
+        catch (e) {
+            log.error("listZones  - integration ${integration.name} raised exception error: ${e.getMessage()}")
+            return ServiceResponse.error("Failed to get the list of Zones from integration ${integration.name}")
+        }
+        if (rpcCall.success) {
+            List<Map> zoneRecords = rpcCall.getData()?.cmdOut
+            log.debug("listZones - integration ${integration.name} - zoneRecords: ${zoneRecords}")
+            if (zoneFilters) {
+                log.info("listZones - integration ${integration.name} - Applying glob style zone filters : ${config.zoneFilter} regEx: ${zoneFilters}")
+                List<Map> filteredZoneRecords = zoneRecords.collect { zone ->
+                    // Does this zone name match any of the import zoneFilters
+                    if (zoneFilters.find { (zone.zoneName ==~ it) }) {
+                        log.info("listZones - integration ${integration.name} - found matching zone: {$zone.zoneName}")
+                        return zone
+                    } else {
+                        log.warn("listZones - integration ${integration.name} - Skipping non-matching zone: {$zone.zoneName}")
+                    }
+                }.findAll()
+                //Return the ServiceResponse with filtered zone records
+                collector = ServiceResponse.prepare(filteredZoneRecords)
+                collector.setSuccess(true)
+                collector.setMsg("Importing zones with matching Zone Filter ${config.zoneFilter}")
+                return collector
+            } else {
+                collector = ServiceResponse.prepare(zoneRecords)
+                collector.setSuccess(true)
+                collector.setMsg("Importing all discovered Zone records")
+                log.info("listZones - integration ${integration.name} - No Zone filter - importing all zones")
+                return collector
+            }
+        } else {
+            log.error("listZones - integration ${integration.name} - Failed to get Dns Zone list")
+            return ServiceResponse.error("integration ${integration.name} - Unable to collect Zone records")
+        }
     }
 
-    def listRecords(AccountIntegration integration, NetworkDomain domain) {
-
-        def rtn = [success:false, recordList:[]]
+    /**
+     * Use the rpcService to return q list of Zone Resource records
+     *
+     * @param AccountIntegration integration
+     * @return ServiceResponse containing the List<Map> of zoneRecords
+     */
+    ServiceResponse listRecords(AccountIntegration integration, NetworkDomain domain) {
+        ServiceResponse rpcCall
+        ServiceResponse collector
         try {
             log.info("listRecords - integration ${integration.name} - importing zone ${domain.externalId}")
             String computerName = integration.servicePath ?: "" // DnsServer if going via a service box
-            String serviceType = getServiceType(integration) // How to access Dns Service for this integration            
-            String command = buildGetDnsResourceRecordScript(domain.externalId,computerName,serviceType)
-            def rpcData = executeCommandScript(integration, command)
-            if (rpcData?.status == 0) {
-                rtn.success = true
-                rtn.recordList = rpcData.cmdOut
-                log.info("listRecords - integration ${integration.name} - zone: ${domain.externalId} resourceRecords: ${rtn.recordList.size()}")
-            }
-            else {
-                log.error("listRecords - integration ${integration.name} - zone: ${domain.externalId} - status: ${rpcData.status} - details: ${rpcData.errOut}")
-            }
-        } catch(e) {
-            log.error("listRecords - integration ${integration.name} raised error: ${e.getMessage()}")
-        }
-        return rtn
-    }
-
-    def getDnsServiceProperties(AccountIntegration integration) {
-        def rpcData = [status:1, errOut:null, cmdOut: null]
-        String command
-        try {
-            log.info("getDnsServiceProperties - integration ${integration.name} - attempting to discovering Dns Service properties")
-            String computerName = integration.servicePath ?: "" // DnsServer if going via a service box
-            command = buildTestDnsServiceScript(computerName)
-            rpcData = executeCommandScript(integration,command)
-            log.info("getDnsServiceProperties - integration ${integration.name} - Discovery status: ${rpcData}")
-        } catch(e) {
-            log.error("getDnsServiceProperties - integration ${integration.name} raised exception: ${e.getMessage()}")
-        }
-        return rpcData      
-    }
-
-    /**
-     * Wrapper method to execute the custom built Powershell command string via the Morpheus rpc process
-     * and handle the custom response for this plugin. Powershell Commands return a json string interpreted 
-     * and transformed into a Map object by handleTaskResult()
-     */
-    Map executeCommandScript(AccountIntegration integration, String commandScript) {
-
-        TaskResult results // Morpheus Rpc service result
-        log.debug("executeCommandScript - Integration : ${integration.name} Ready to execute commandScript")
-        def computerName = integration.servicePath
-        def commandOpts = getRpcConfig(integration, computerName)
-        results = executeCommand(commandScript, commandOpts)
-        // inspect the Morpheus rpc TaskResult for the custom rpcData
-        return handleTaskResult(results)
-    }
-
-    /**
-     * execute command string over the Morpheus RPC process
-     * @param command
-     * @param opts 
-     */
-    TaskResult executeCommand(String command, Map opts) {
-        def winrmPort = opts.port && opts.port != 22 ? opts.port : 5985
-
-        def dns = [:]
-        TaskResult result
-        log.debug("executeCommand - command: ${command}")
-        log.debug("executeCommand - Using command parameter opts: ${opts}")
-
-        try {
-            result = getMorpheus().executeWindowsCommand(opts.host,winrmPort,opts.username,opts.password,command,true,opts.elevated ? true: false).blockingGet()
-            log.debug("executeCommand TaskResult ${result.toMap()}")
-            // Check for any Microsoft DNS service error codes
-            if (result.success) {
-                log.debug("executeCommand - Microsoft DNS Rpc process on host ${opts.host} completed successfully. Process exitCode ${result.exitCode}")
-                result.msg = "Remote Process completed successfully"
-            } else {
-                //Did the remote process actually connect - check exitCode: null indicates failed to establish a connection 
-                if (result.exitCode) {
-                    log.warn("executeCommand - Remote Process on host ${opts.host} returned exitCode ${result.exitCode}")
-                    result.error = "Remote Process returned a non-zero exit code ${result.exitCode}"
-                } else {
-                    result.error = "Remote Process failed to connect to host with the credentials supplied"
-                    log.error("executeCommand - Rpc process failed to host ${opts.host} with the credentials supplied ${opts.username}")
-                }
-            }
+            String serviceType = integration.getConfigProperty("serviceType")
+            rpcCall = rpcService.executeCommand(MicrosoftDnsPluginHelper.buildGetDnsResourceRecordScript(domain.externalId, computerName, serviceType), integration)
         }
         catch (e) {
-            log.warn("executeCommand - Rpc process raised exception - ${e}")
-            result.error = "executeCommand raised exception ${e.getMessage()}"
+            log.error("listRecords  - integration ${integration.name} raised exception error: ${e.getMessage()}")
+            return ServiceResponse.error("Failed to get the list of Zone Records from integration ${integration.name}")
         }
-        return result
-    }
-
-    /**
-     * Generalizes the remote connection information from credential data
-     * @param integration
-     * @param computerName
-     */
-    private getRpcConfig(AccountIntegration integration, String computerName=null) {
-        if (!integration?.credentialLoaded) {
-            //No credentials loaded. Load via credentialService
-            def credentialService = getMorpheus().getServices().getAccountCredential()
-            def cred = credentialService.loadCredentials(integration).getData()
-            log.info("getRpcConfig - Integration: Loading Credential Data via service ${cred}")
-            integration.setCredentialData(cred)
-            integration.setCredentialLoaded(true)          
-        }
-        log.debug("getRpcConfig - integration: ${integration.name} - credentialData : ${integration.credentialData}")
-        def rtn = [:]
-        rtn.host = integration.serviceUrl
-        rtn.port = integration.servicePort ?: 5985
-        rtn.username = integration.credentialData?.username ?: integration.serviceUsername
-        rtn.password = integration.credentialData?.password ?: integration.servicePassword
-        //rtn.elevated = computerName ? true : false
-        rtn.elevated = false // never use the JRuby if possible
-        //rtn.servicePath = integration.serviceMode???
-        log.debug("getRpcConfig - integration: ${integration.name} - rtn: ${rtn}")
-        return rtn
-    }
-
-    /**
-    * TaskResult exitCode is not always set by the rpc service to the DNS Cmdlet error code
-    * In this implementation, the Microsoft DNS Error Code (non zero) if raised will be returned as part
-    * of a json string in the TaskResult data property
-    * 
-    * taskResult.data = {
-    *   "status": "<rpc error code or 0>, 
-    *   "cmdOut": "<cmdlet output list>" , 
-    *   "errOut": {error object containing detailed Microsoft properties and mandatory message property containing error text}
-    * }
-    *
-    * A null response usually signals an rpc connection failure. Return status 1 with appropriate message
-    * otherwise Common Microsoft DNS Error codes are:
-    *
-    * 9711 DNS fwd record already exists
-    * 9714 DNS Record does not exist
-    * 9715 Could not create PTR Record (raise when -CreatePtr is added and a record already exists)
-    * 9601 DNS zone does not exist.
-    * 9563 The record could not be created because this part of the DNS namespace has been delegated to another server
-    * 1722 The server is not a DNS Server - the rpc server is unavailable
-    */
-    Map handleTaskResult(TaskResult result) {
-
-        def jsonSlurper = new JsonSlurper()
-        def rpcData = [:]
-        
-        // Inspect TaskResult data property for a valid response from the Rpc process
-        if (result?.data) {
-            try {
-                log.debug("handleTaskResult - Raw json rpcData ${result.data}")
-                rpcData = jsonSlurper.parseText(result.data)
-                log.debug("handleTaskResult - MicrosoftDns Rpc result Status ${rpcData}")
-            }
-            catch (e) {
-                log.warn("handleTaskResult - Unable to process MicrosoftDns return json. TaskResult exitCode: ${result.exitCode} - exception ${e}")
-                rpcData.status = 1
-                rpcData.cmdOut = null
-                rpcData.errOut = [message: "Unable to interpret the Rpc json response ${e.getMessage()}"] 
-            }
+        if (rpcCall.success) {
+            List<Map> zoneRecords = rpcCall.getData()?.cmdOut
+            collector = ServiceResponse.prepare(zoneRecords)
+            collector.setSuccess(true)
+            collector.setMsg("zone: ${domain.externalId} resourceRecords: ${zoneRecords.size()}")
+            log.info("listRecords - integration ${integration.name} - zone: ${domain.externalId} resourceRecords: ${zoneRecords.size()}")
+            return collector
         } else {
-            log.error("handleTaskResult - MicrosoftDns Rpc result returned no usable data. TaskResult exitCode: ${result.exitCode}")
-            rpcData.status = 1
-            rpcData.cmdOut = null
-            rpcData.errOut = [message: "Failed to connect to Remote Service with the credentials provided"]
-        }        
-        return rpcData
+            log.warn("listRecords - integration ${integration.name} - Unable to collect records for zone: ${domain.externalId}")
+            return ServiceResponse.error("integration ${integration.name} - Unable to collect records for zone: ${domain.externalId}")
+        }
+    }
+
+    /**
+     * Using the properties selected in the Edit Integration dialog, test access to DNS Service
+     * A Service Profile defines
+     * rpcType (winrm or agent)
+     * serviceHost (the DNS Server if not local)
+     * serviceType (wmi or winrm if remote otherwise local)
+     * @param integration
+     * @return  ServiceResponse
+     */
+    ServiceResponse testDnsServiceProfile(AccountIntegration integration) {
+
+        String serviceType = integration.getConfigProperty("serviceType")
+        String command
+        try {
+            log.info("testDnsServiceProfile - integration ${integration.name} - Testing access to DNS services using serviceType ${serviceType}")
+            command = MicrosoftDnsPluginHelper.buildTestDnsServiceScript(integration.servicePath, serviceType)
+            return rpcService.executeCommand(command,integration)
+        }
+        catch(e) {
+            log.error("testDnsServiceProfile - integration ${integration.name} raised exception: ${e.getMessage()}")
+            return ServiceResponse.error("Exception raised discovering service profile ${e.getMessage()}")
+        }
     }
 
     /**
      * Validates the Dns Resource Record
      * returns ServiceResponse
+     * @paramNetworkDomainRecord record
     */
     ServiceResponse validateDnsRecord(NetworkDomainRecord record) {
 
@@ -1034,7 +970,7 @@ class MicrosoftDnsProvider implements DNSProvider {
     /**
      * Validates the Resource Record types that can be added or deleted by this plugin 
      */
-    private Boolean supportedRrType(String rrType) {
+    private static Boolean supportedRrType(String rrType) {
         if (rrType) {
             def validTypes = ["A","PTR","CNAME"]
             def matchingType = validTypes.findAll {it == rrType.trim().toUpperCase()}
@@ -1049,7 +985,7 @@ class MicrosoftDnsProvider implements DNSProvider {
      * Given a hostName and zoneName, retrun a valid Non-Qualified hostname
      * with the zoneName removed
      */
-    private String getNQDN(String hostName, String zoneName) {
+    private static String getNQDN(String hostName, String zoneName) {
          
         String nqdn = hostName
         if (zoneName) {
@@ -1096,41 +1032,44 @@ class MicrosoftDnsProvider implements DNSProvider {
      * the script is refreshed from the plugin 
      * The helper script has Powershell functions that handle the Microsoft DNS Powershell cmdlets locally
      * or via a jump server
+     * @param AccountIntegration integration
      */
-    ServiceResponse testDnsHelperScript(AccountIntegration integration) {
+    ServiceResponse verifyMorpheusDnsPluginPowershell(AccountIntegration integration) {
         String runCmd
+        ServiceResponse rpcCall
 
-        log.debug("testDnsHelperScript - integration ${integration.name} - verifying Morpheus Helper module ${MicrosoftDnsPluginHelper.getHelperFile()} on ${integration.serviceUrl}")
-        runCmd = MicrosoftDnsPluginHelper.testHelperFileScript()
-        def rtn = executeCommandScript(integration,runCmd)
-        if (rtn.status == 9) {
-            // Helper script needs to be transferred as its missing or failed the chksum.
-            log.warn("testDnsHelperScript - integration ${integration.name} - returned errOut: ${rtn.errOut}")
-            def xferRtn = transferDnsHelperScript(integration)
-            if (xferRtn.status == 0) {
-                log.info("testDnsHelperScript - integration ${integration.name} - Successfully transferred Dns Helper module - re-running tests")
-                //run the MicrosoftDnsPluginHelper.testHelperFileScript() again to verify script file
-                rtn = executeCommandScript(integration,runCmd)
-            }                 
-        }
-        if (rtn.status == 0) {
-            log.info("testDnsHelperScript - integration ${integration.name} - DNS Helper Module successfully verified. cmdOut:${rtn.cmdOut} on host ${integration.serviceUrl}")
-            return ServiceResponse.success(rtn,"Morpheus Dns Helper Powershell Module verified on ${integration.serviceUrl}")
+        log.debug("verifyMorpheusDnsPluginPowershell - integration ${integration.name} - checking Morpheus Helper module ${MicrosoftDnsPluginHelper.getHelperFile()} on ${integration.serviceUrl}")
+        rpcCall = rpcService.executeCommand(MicrosoftDnsPluginHelper.testHelperFileScript(), integration)
+        //log.info("verifyMorpheusDnsPluginPowershell TESTING ${rpcCall.dump()}")
+        if (rpcCall.success) {
+            return rpcCall
         } else {
-            log.error("testDnsHelperScript - integration ${integration.name} - Error checking Morpheus Dns Helper script rtn: ${rtn}")
-            return ServiceResponse.error(rtn.errOut.message)
-        }  
-    } 
+            if (rpcCall.data?.status == 9) {
+                log.warn("verifyMorpheusDnsPluginPowershell - integration ${integration.name} - ${rpcCall.data?.errOut}")
+                ServiceResponse xferRpc = transferDnsHelperScript(integration)
+                if (xferRpc.success) {
+                    log.info("verifyMorpheusDnsPluginPowershell - integration ${integration.name} - Successfully transferred Morpheus Helper module - re-running tests")
+                    return rpcService.executeCommand(MicrosoftDnsPluginHelper.testHelperFileScript(), integration)
+                } else {
+                    log.error("verifyMorpheusDnsPluginPowershell - integration ${integration.name} - Failed to transfer Morpheus Helper module")
+                    return xferRpc
+                }
+            } else {
+                log.error("verifyMorpheusDnsPluginPowershell - integration ${integration.name} - Error verifying Morpheus Helper module ${rpcCall.data.errOut}")
+                return rpcCall
+            }
+        }
+    }
 
     /**
      * This method transfers a Powershell script file containing the Functions needed to support this Integration into the %LOCALAPPDATA
      * path in the Service Account user profile. It helps to overcome the size limitations imposed by the Rpc service
      */       
-    private transferDnsHelperScript(AccountIntegration integration) {
+    private ServiceResponse transferDnsHelperScript(AccountIntegration integration) {
         String runCmd
         String contentToXfer = MicrosoftDnsPluginHelper.morpheusDnsHelperScript()
 
-        def rtn = [status:0,cmdOut:null,errOut:null]
+        ServiceResponse rtn
         log.info("transferDnsHelperScript - integration ${integration.name} - Preparing to transfer helper script in 1k fragments")
         try {
             def i = 0
@@ -1140,22 +1079,35 @@ class MicrosoftDnsProvider implements DNSProvider {
                 contentToXfer = contentToXfer.drop(1024)
                 def b64Block = chunk.getBytes("UTF-8").encodeBase64().toString()
                 runCmd = MicrosoftDnsPluginHelper.copyHelperBlockScript(b64Block)
-                rtn = executeCommandScript(integration,runCmd)
-                if(rtn.status != 0) {
+                rtn = rpcService.executeCommand(runCmd,integration)
+                if(!rtn.success) {
                     log.warn("transferDnsHelperScript - integration ${integration.name} - Failed to transfer helper script - ${rtn.errOut}")
                     break
                 }
                 i = i+1
             }
             log.info("transferDnsHelperScript - integration ${integration.name} - Transfer complete")
+            return rtn
         }
         catch (e) {
             log.error("transferDnsHelperScript - integration ${integration.name} - Exception ${e.getMessage()}")
-            rtn.status = 1
-            rtn.errOut = "Transfer script raised exception: ${e.getMessage()}"
+            if (rtn) {
+                return rtn
+            } else {
+                return ServiceResponse.error("Failed to transfer helper module. Exception ${e.getMessage()}")
+            }
         }
-        return rtn
     }
+
+    /**
+     * Tests the integration rpc service configuration (agent or winrm) hosted on the serviceUrl using the credentials
+     * provided on the integration dialog.
+     * Returns a ServiceResponse
+     */
+    ServiceResponse testRpcConnection(AccountIntegration integration) {
+        return rpcService.executeCommand(MicrosoftDnsPluginHelper.testRpcConnection(),integration)
+    }
+
 
     /**
      * Tests if the integration can access the DNS Services with the credentials provided either
@@ -1170,279 +1122,90 @@ class MicrosoftDnsProvider implements DNSProvider {
     ServiceResponse testDnsService(AccountIntegration integration) {
         String command
         def rpcData
-        def computerName = integration.servicePath ?: ""
-        def commandOpts = getRpcConfig(integration,computerName)
-        
-        ServiceResponse<AccountIntegration> rtn = new ServiceResponse(true,null,null,integration)
-
-        // Verify the Morpheus Dns Powershell Helper module and update if required (based on md5 check) 
-        // Use a distributedLock to ensure the transfer is exclusive for this serviceUrl
-
+        def config = integration.getConfigMap()
+        String computerName = integration.servicePath ?: ""
+        String serviceType = config.serviceType
+        // Prepare the return ServiceResponse
+        ServiceResponse<AccountIntegration> serviceTest = ServiceResponse.prepare(integration)
         String lockName = "${getCode()}.helper.${integration.serviceUrl}.${MicrosoftDnsPluginHelper.getHelperFile()}"
         String lockId
+        ServiceResponse rpcCall
         ServiceResponse testHelper
-
+        ServiceResponse testDnsProfile
         try {
-            // try grabbing a lock
-            log.info("testDnsService - integration: ${integration.name} - Checking Morpheus Helper Powershell script is valid on ${integration.serviceUrl}")
+            // Step 1: Veryify and if needed transfer Morpheus Helper Module
+            log.info("testDnsService - integration: ${integration.name} - Checking Morpheus Helper Powershell script is valid on rpcHost ${integration.serviceUrl}")
             log.info("testDnsService - integration: ${integration.name} - attempting to grab lock ${lockName} ...")
-            lockId = morpheusContext.acquireLock(lockName,[ttl:120000L,timeout:60000L]).blockingGet()
+            lockId = morpheusContext.acquireLock(lockName, [ttl: 120000L, timeout: 60000L]).blockingGet()
             log.info("testDnsService - integration: ${integration.name} - Acquired lock: ${lockName}, value: ${lockId}")
-            testHelper = testDnsHelperScript(integration)
+            testHelper = verifyMorpheusDnsPluginPowershell(integration)
+            log.info("TESTING ${testHelper.dump()}")
+
         }
         catch (e) {
             log.error("testDnsService - integration: ${integration.name} - Unable to verify DNS Helper Script - Possibly locked by another integration.")
-            testHelper = ServiceResponse.error("Unable to verify DNS Helper at this time. Possible locked by another integration")
+            //return ServiceResponse.error("Unable to verify DNS Helper at this time. Possible locked by another integration")
         }
         finally {
             if (lockId) {
                 log.info("testDnsService - integration: ${integration.name} - Releasing lock: ${lockName}, value: ${lockId}")
-                morpheusContext.releaseLock(lockName,[lock: lockId]).blockingGet()
+                morpheusContext.releaseLock(lockName, [lock: lockId]).blockingGet()
             }
         }
-
-        log.debug("testDnsService - integration: ${integration.name} testDnsHelperScript ServiceResponse: ${testHelper}")
-        if (!testHelper.success) {
-            log.error("testDnsService - integration: ${integration.name} - Failed to transfer Morpheus Powershell Helper - check account Credentials - ${testHelper}")
-            rtn.errors["serviceUrl"] = "Failed to transfer Morpheus Powershell Helper - check account Credentials for ${integration.serviceUrl}"
-            rtn.success = false
-            return rtn
-        }
-        if (integration.servicePath) {
-            try {
-                //Cache Credentials if using an intermediate server
-                log.info("testDnsService - integration: ${integration.name} - Caching credential on host ${integration.serviceUrl} for onward use on ${integration.servicePath}")
-                command = buildCacheCredentialScript(commandOpts.username,commandOpts.password)
-                rpcData = executeCommandScript(integration,command)
-                if (rpcData?.status > 0) {
-                    log.error("testDnsService - integration: ${integration.name} - Failed to securely cache credentials ${rpcData?.errOut?.message}")
-                    rtn.addError("serviceUrl","Failed to securely cache credentials for use on ${computerName}")
-                    rtn.msg = "Failed to securely cache credentials - error: ${rpcData?.errOut?.message}"
-                    return rtn
-                } else {
-                    log.info("testDnsService - integration: ${integration.name} - Credentials securely cached on host ${integration.serviceUrl}")
-                }
-            }
-            catch (e) {
-                rtn.success = false
-                rtn.addError("Failed to securely cache credentials - error: ${e.getMessage()}")
-                log.warn("testDnsService - integration: ${integration.name} Exception caching credentials on ${integration.servicePath} - ${e.getMessage()}")
-                return rtn
-            }
+        if (testHelper && testHelper.success) {
+            log.info("testDnsService - integration: ${integration.name} - Morpheus Powershell Module verified with checksum ${testHelper.getData().cmdOut?.md5Chksum}")
         } else {
-            //DNS Services are local
-            log.info("testDnsService - integration: ${integration.name} - Testing access to Dns Services on ${integration.serviceUrl}")
+            log.error("testDnsService - integration: ${integration.name} - Failed to transfer Morpheus Powershell Module - check account Credentials - ${testHelper}")
+            serviceTest.success = false
+            serviceTest.addError("serviceUrl","Failed to transfer Morpheus Powershell Helper Module - check account Credentials for ${integration.serviceUrl}")
+            return serviceTest
         }
+        //Step 2: Cache credential in case its needed to upgrade the NTLM connection
         try {
-            rpcData = getDnsServiceProperties(integration)
-            // rpcData.cmdOut contains properties about the user, group membership and DNS server version
-            if (rpcData?.status > 0) {
-                log.error("testDnsService - integration: ${integration.name} - serviceUrl: ${integration.serviceUrl}, servicePath: ${integration.servicePath}. Cannot access MicrosoftDns rpc Services ${rpcData.errOut.message}")
-                def errType = computerName ? "servicePath" : "serviceUrl"
-                rtn.addError(errType,"Cannot access DNS Services with the Credentials provided. Error : ${rpcData.errOut.message}")
-                rtn.msg = "Failed to access Dns Services - error: ${rpcData?.errOut?.message}"
-                rtn.success = false
-                return rtn            
+            //Cache Credentials if using an intermediate server
+            log.info("testDnsService - integration: ${integration.name} - Caching credential on host ${integration.serviceUrl}")
+            String username = integration.credentialData?.username ?: integration.serviceUsername
+            String password = integration.credentialData?.password ?: integration.servicePassword
+            command = MicrosoftDnsPluginHelper.buildCacheCredentialScript(username, password)
+            rpcCall = rpcService.executeCommand(command, integration)
+            if (!rpcCall.success) {
+                log.error("testDnsService - integration: ${integration.name} - Failed to securely cache credentials")
+                return rpcCall
             } else {
-                //local,winrm or wmi serviceType
-                // I would like to store it here integration.serviceMode = rpcData.cmdOut?.serviceType
-                setServiceType(integration,rpcData.cmdOut?.serviceProfile?.serviceType)
-                integration.setConfigProperty('serviceType',getServiceType(integration))
-                log.info("testDnsService - integration: ${integration.name} - serviceUrl: ${integration.serviceUrl}, servicePath: ${integration.servicePath}, serviceType: ${getServiceType(integration)}. Dns Services tested OK")
-                rtn.success = true
-                rtn.msg = "Microsoft Dns Services tested OK"
-                return rtn
+                log.info("testDnsService - integration: ${integration.name} - Credentials securely cached on host ${integration.serviceUrl}")
             }
         }
         catch (e) {
-            rtn.success = false
-            rtn.addError("Exception raise testing DNS Services : ${e.getMessage()}")
+            log.warn("testDnsService - integration: ${integration.name} Exception caching credentials on ${integration.servicePath} - ${e.getMessage()}")
+            serviceTest.success = false
+            serviceTest.addError("serviceUrl","Failed to securely cache credentials - error: ${e.getMessage()}")
+            return serviceTest
+        }
+        //Final Step - test access to DNS Service with the chosen service profile
+        try {
+            testDnsProfile = testDnsServiceProfile(integration)
+            rpcData = testDnsProfile.getData()
+            log.debug("testDnsProfile ServiceResponse: ${testDnsProfile.dump()}")
+            if (testDnsProfile.success) {
+                Map serviceProfile = rpcData.cmdOut?.serviceProfile
+                log.info("testDnsService - integration: ${integration.name} : Successful connection: Service Profile: ${serviceProfile}")
+                serviceTest.success = true
+                serviceTest.msg = "Successfully connected to Microsoft DNS Services"
+                return serviceTest
+            } else {
+                log.error("testDnsService - integration: ${integration.name} - Rpc process failed to contact Services ${rpcData?.errOut?.message}")
+                def errType = integration.servicePath ? "servicePath" : "serviceUrl"
+                serviceTest.addError(errType, "Cannot access DNS Services with the selected service Profile. Check credentials, rpc method and Service Type are correct. Error message : ${rpcData.errOut?.message}")
+                serviceTest.msg = "Failed to access Dns Services - error: ${rpcData?.errOut?.message}"
+                serviceTest.success = false
+                return serviceTest
+            }
+        }
+        catch (e) {
             log.warn("testDnsService - integration: ${integration.name} Exception while testing DNS Services - ${e.getMessage()}")
-            return rtn
+            serviceTest.success = false
+            serviceTest.addError("serviceUrl","Exception raised testing DNS Services : ${e.getMessage()}")
+            return serviceTest
         }
     }
-
-    /**
-     * If using a jump server this Powershell securely caches the credential password in a secure string inside 
-     * the profile of the user on the jump server. The credential can only be used by the user who created it and
-     * only from the same server (Uses Windows DPAPI)
-     * SecureString will be saved to the cache file named %LOCALAPPDATA%\<User SID>-dnsPlugin.ss
-     * 
-     * Username is the Integration service account 
-    */
-    private String buildCacheCredentialScript(String username, String password) {
-        String runCmd
-        def template = MicrosoftDnsPluginHelper.templateHelperScript()
-        def encodedPassword = password.getBytes("UTF-8").encodeBase64().toString()
-        def userCmd = '''
-        #
-        $rtn=Export-MorpheusCredential -Password <%password%>
-        '''
-        def userScript = userCmd.stripIndent()
-            .replace("<%password%>",encodedPassword)
-        runCmd = template.replace("<%usercode%>",userScript)
-        log.info("buildCacheCredentialScript - Building script to securely cache credentials for ${username}")
-        // Dont debug runCmd as it contains creds
-        return runCmd        
-    }
-
-    /**
-     * This Powershell tests access to the Dns Services on the local Dns server or with cached credential via a 
-     * jump server
-     */
-    private String buildTestDnsServiceScript(String computerName) {
-        String runCmd
-        def template = MicrosoftDnsPluginHelper.templateHelperScript()
-        def userCmd = '''
-        #
-        $rtn=Test-MorpheusServicePath -Computer "<%computer%>"
-        '''
-        log.info("buildTestDnsServiceScript - Building script to test access to DNS Services")
-        def computer = computerName ?: ""
-        def userScript = userCmd.stripIndent()
-            .replace("<%computer%>",computer)
-        // Load Template and add the userScript
-        runCmd = template.replace("<%usercode%>",userScript)
-        log.debug("buildTestDnsServiceScript - ${runCmd}")
-        return runCmd
-    }
-
-    /**
-     * Powershell ScriptBlock for Adding a Dns Resource record
-     * Specify the Resource Record to be created (rrType). Supported options can be clearly seen in the switch statement
-     * The ScriptBlock is executed using InvokeCommand on the local server unless a computerName is supplied
-     *
-     * values surrounded by <% %> are replace by the corresponding parameters before the command string is returned ready for execution
-     */
-    private String buildAddDnsRecordScript(String rrType, String name, String zone, String recordData, Integer ttl, Boolean createPtrRecord, String computerName, String serviceType) {
-        String runCmd
-        def template = MicrosoftDnsPluginHelper.templateHelperScript()
-        def userCmd = '''
-        #
-        $Params = @{
-            RrType="<%rrtype%>";
-            Name="<%name%>";
-            Zone="<%zone%>";
-            Data="<%data%>";
-            Ttl=<%ttl%>;
-            CreatePtr=<%createptr%>;
-            Computer="<%computer%>";
-            ServiceType="<%servicetype%>"
-        }
-        $rtn=Add-MorpheusDnsRecord @Params
-        '''
-        // Prepare parameters to replace in the command template
-        def computer = computerName ?: ""
-        def createPtr = createPtrRecord ? '$True' : '$False'
-        def ttlString = ttl ? ttl.toString() : "3600"
-        def userScript = userCmd.stripIndent()
-            .replace("<%rrtype%>",rrType)
-            .replace("<%name%>",name)
-            .replace("<%zone%>",zone)
-            .replace("<%data%>",recordData)
-            .replace("<%ttl%>",ttlString)
-            .replace("<%createptr%>",createPtr)
-            .replace("<%computer%>",computer)
-            .replace("<%servicetype%>",serviceType)
-        // Load Template and add the userScript
-        runCmd = template.replace("<%usercode%>",userScript)
-        log.info("buildAddDRecordScript - Building script to add ${rrType} record - host: ${name}, zone: ${zone}, recordData: ${recordData}, ttl : ${ttlString}, createPtr: ${createPtrRecord ? 'True' : 'False'}")        
-        log.debug("buildAddDRecordScript : ${runCmd}")
-        return runCmd
-    }
-
-    /**
-     * Powershell ScriptBlock for Removing a Dns Resource record
-     * Specify the Resource Record to be Deleted (rrType). Supported options can be clearly seen in the switch statement
-     * The ScriptBlock is executed using InvokeCommand on the local server unless a computerName is supplied
-     * values surrounded by <% %> are replace by the corresponding parameters before the command string is returned ready for execution
-     */
-    private String buildRemoveDnsServerRecordScript(String rrType, String name, String zone, String recordData, String computerName, String serviceType) {
-        String runCmd
-        def template = MicrosoftDnsPluginHelper.templateHelperScript()
-        def userCmd = '''
-        #
-        $Params = @{
-            RrType="<%rrtype%>";
-            Name="<%name%>";
-            Zone="<%zone%>";
-            Data="<%data%>";
-            Computer="<%computer%>";
-            ServiceType="<%servicetype%>"
-        }        
-        $rtn=Remove-MorpheusDnsRecord @Params
-        '''
-        // Prepare parameters to replace in the command template
-        def computer = computerName ?: ""
-        def userScript = userCmd.stripIndent()
-            .replace("<%rrtype%>",rrType)
-            .replace("<%name%>",name)
-            .replace("<%zone%>",zone)
-            .replace("<%data%>",recordData)
-            .replace("<%computer%>",computer)
-            .replace("<%servicetype%>",serviceType)
-        runCmd = template.replace("<%usercode%>",userScript)
-        log.info("buildRemoveDnsServerRecordScript - Building script to remove ${rrType} record - host: ${name}, zone: ${zone}, recordData: ${recordData}")
-        log.debug("buildRemoveDnsServerRecordScript : ${runCmd}")
-        return runCmd
-    }
-
-    /**
-     * Powershell ScriptBlock for Retrieving DNS Zones
-     * The ScriptBlock is executed using InvokeCommand on the local server unless a computerName is supplied
-     *
-     * values surrounded by <% %> are replace by the corresponding parameters before the command string is returned ready for execution
-     */
-    private String buildGetDnsZoneScript(String computerName, String serviceType) {
-        String runCmd
-        def template = MicrosoftDnsPluginHelper.templateHelperScript()
-        def userCmd = '''
-        #
-        $Params = @{
-            Computer="<%computer%>";
-            ServiceType="<%servicetype%>"
-        } 
-        $rtn=Get-MorpheusDnsZone @Params
-        '''
-        // Prepare parameters to replace in the command template
-        def computer = computerName ?: ""
-        def userScript = userCmd.stripIndent()
-            .replace("<%computer%>",computer)
-            .replace("<%servicetype%>",serviceType)
-        runCmd = template.replace("<%usercode%>",userScript)
-        log.info("buildGetDnsZoneScript - Building script to get Zone records")
-        log.debug("buildGetDnsZoneScript : ${runCmd}")
-        return runCmd
-    }
-
-    /**
-     * Powershell ScriptBlock for Retrieving DNS Zones Records
-     * The ScriptBlock is executed using InvokeCommand on the local server unless a computerName is supplied
-     *
-     * values surrounded by <% %> are replace by the corresponding parameters before the command string is returned ready for execution
-     */
-    private String buildGetDnsResourceRecordScript(String zone, String computerName, String serviceType) {
-        String runCmd
-        def template = MicrosoftDnsPluginHelper.templateHelperScript()
-        def userCmd = '''
-        #
-        $Params = @{
-            Zone="<%zone%>";
-            Computer="<%computer%>";
-            ServiceType="<%servicetype%>"
-        }         
-        $rtn=Get-MorpheusDnsResourceRecord @Params
-        '''
-        // Prepare parameters to replace in the command template
-        def computer = computerName ?: ""
-        def userScript = userCmd.stripIndent()
-            .replace("<%zone%>",zone)
-            .replace("<%computer%>",computer)
-            .replace("<%servicetype%>",serviceType)
-        runCmd = template.replace("<%usercode%>",userScript)
-        log.info("buildGetDnsResourceRecordScript - Building script to get zone resource records for zone ${zone}")
-        log.debug("buildGetDnsResourceRecordScript : ${runCmd}")
-        return runCmd
-    }
- 
 }

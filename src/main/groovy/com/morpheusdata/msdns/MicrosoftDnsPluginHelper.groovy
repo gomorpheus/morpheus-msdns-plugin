@@ -69,7 +69,25 @@ class MicrosoftDnsPluginHelper {
         return MicrosoftDnsPluginHelper.loadResourceString(MicrosoftDnsPluginHelper.getHelperResourceName())
     }
 
-   
+    /*
+    * Powershell Snippet to test the Rpc Connection
+    */
+    public static testRpcConnection() {
+        String rpcTest = '''
+            $rtn = [PSCustomObject]@{status=0;errOut=$Null;cmdOut=$Null}
+            $winId = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+            $rpcInfo = [PSCustomObject]@{
+                computer=[Environment]::MachineName;
+                userId=$winId.Name
+                powershellVersion=$PSVersionTable.PSVersion.ToString()
+            }
+            $rtn.cmdOut=$rpcInfo
+            $rtn | ConvertTo-Json -depth 3 
+        '''
+        log.debug("testRpcConnection - Returning script ${rpcTest}")
+        return rpcTest.stripIndent()
+    }
+
     /*
     * Powershell commands to transfer the Morpheus DNS Helper module in 1K base64 chunks to the serviceUrl (Windows Computer) so that subsequent calls can load the module
     * from a file on the Windows Server. The Helper module is located in the user profile LOCALAPPDATA. 
@@ -169,4 +187,192 @@ class MicrosoftDnsPluginHelper {
         log.debug("templateHelperScript - Returning Powershell Snippet to load Helper Script ${fileName}")
         return installScript.stripIndent().replace("<%helperfile%>",fileName)
     }
+
+    /**
+     * Powershell ScriptBlock for Retrieving DNS Zones
+     * The ScriptBlock is executed using InvokeCommand on the local server unless a computerName is supplied
+     *
+     * values surrounded by <% %> are replace by the corresponding parameters before the command string is returned ready for execution
+     */
+    public static String buildGetDnsZoneScript(String computerName, String serviceType) {
+        String runCmd
+        def template = templateHelperScript()
+        def userCmd = '''
+        #
+        $Params = @{
+            Computer="<%computer%>";
+            ServiceType="<%servicetype%>"
+        } 
+        $rtn=Get-MorpheusDnsZone @Params
+        '''
+        // Prepare parameters to replace in the command template
+        def computer = computerName ?: ""
+        def userScript = userCmd.stripIndent()
+                .replace("<%computer%>",computer)
+                .replace("<%servicetype%>",serviceType)
+        runCmd = template.replace("<%usercode%>",userScript)
+        log.info("buildGetDnsZoneScript - Building script to get Zone records")
+        log.debug("buildGetDnsZoneScript : ${runCmd}")
+        return runCmd
+    }
+
+    /**
+     * Powershell ScriptBlock for Retrieving DNS Zones Records
+     * The ScriptBlock is executed using InvokeCommand on the local server unless a computerName is supplied
+     *
+     * values surrounded by <% %> are replace by the corresponding parameters before the command string is returned ready for execution
+     */
+    public static String buildGetDnsResourceRecordScript(String zone, String computerName, String serviceType) {
+        String runCmd
+        def template = templateHelperScript()
+        def userCmd = '''
+        #
+        $Params = @{
+            Zone="<%zone%>";
+            Computer="<%computer%>";
+            ServiceType="<%servicetype%>"
+        }         
+        $rtn=Get-MorpheusDnsResourceRecord @Params
+        '''
+        // Prepare parameters to replace in the command template
+        def computer = computerName ?: ""
+        def userScript = userCmd.stripIndent()
+                .replace("<%zone%>",zone)
+                .replace("<%computer%>",computer)
+                .replace("<%servicetype%>",serviceType)
+        runCmd = template.replace("<%usercode%>",userScript)
+        log.info("buildGetDnsResourceRecordScript - Building script to get zone resource records for zone ${zone}")
+        log.debug("buildGetDnsResourceRecordScript : ${runCmd}")
+        return runCmd
+    }
+
+    /**
+     * Powershell ScriptBlock for Adding a Dns Resource record
+     * Specify the Resource Record to be created (rrType). Supported options can be clearly seen in the switch statement
+     * The ScriptBlock is executed using InvokeCommand on the local server unless a computerName is supplied
+     *
+     * values surrounded by <% %> are replace by the corresponding parameters before the command string is returned ready for execution
+     */
+    public static String buildAddDnsRecordScript(String rrType, String name, String zone, String recordData, Integer ttl, Boolean createPtrRecord, String computerName, String serviceType) {
+        String runCmd
+        def template = templateHelperScript()
+        def userCmd = '''
+        #
+        $Params = @{
+            RrType="<%rrtype%>";
+            Name="<%name%>";
+            Zone="<%zone%>";
+            Data="<%data%>";
+            Ttl=<%ttl%>;
+            CreatePtr=<%createptr%>;
+            Computer="<%computer%>";
+            ServiceType="<%servicetype%>"
+        }
+        $rtn=Add-MorpheusDnsRecord @Params
+        '''
+        // Prepare parameters to replace in the command template
+        def computer = computerName ?: ""
+        def createPtr = createPtrRecord ? '$True' : '$False'
+        def ttlString = ttl ? ttl.toString() : "3600"
+        def userScript = userCmd.stripIndent()
+                .replace("<%rrtype%>",rrType)
+                .replace("<%name%>",name)
+                .replace("<%zone%>",zone)
+                .replace("<%data%>",recordData)
+                .replace("<%ttl%>",ttlString)
+                .replace("<%createptr%>",createPtr)
+                .replace("<%computer%>",computer)
+                .replace("<%servicetype%>",serviceType)
+        // Load Template and add the userScript
+        runCmd = template.replace("<%usercode%>",userScript)
+        log.info("buildAddDRecordScript - Building script to add ${rrType} record - host: ${name}, zone: ${zone}, recordData: ${recordData}, ttl : ${ttlString}, createPtr: ${createPtrRecord ? 'True' : 'False'}")
+        log.debug("buildAddDRecordScript : ${runCmd}")
+        return runCmd
+    }
+
+    /**
+     * Powershell ScriptBlock for Removing a Dns Resource record
+     * Specify the Resource Record to be Deleted (rrType). Supported options can be clearly seen in the switch statement
+     * The ScriptBlock is executed using InvokeCommand on the local server unless a computerName is supplied
+     * values surrounded by <% %> are replace by the corresponding parameters before the command string is returned ready for execution
+     */
+    public static String buildRemoveDnsServerRecordScript(String rrType, String name, String zone, String recordData, String computerName, String serviceType) {
+        String runCmd
+        def template = templateHelperScript()
+        def userCmd = '''
+        #
+        $Params = @{
+            RrType="<%rrtype%>";
+            Name="<%name%>";
+            Zone="<%zone%>";
+            Data="<%data%>";
+            Computer="<%computer%>";
+            ServiceType="<%servicetype%>"
+        }        
+        $rtn=Remove-MorpheusDnsRecord @Params
+        '''
+        // Prepare parameters to replace in the command template
+        def computer = computerName ?: ""
+        def userScript = userCmd.stripIndent()
+                .replace("<%rrtype%>",rrType)
+                .replace("<%name%>",name)
+                .replace("<%zone%>",zone)
+                .replace("<%data%>",recordData)
+                .replace("<%computer%>",computer)
+                .replace("<%servicetype%>",serviceType)
+        runCmd = template.replace("<%usercode%>",userScript)
+        log.info("buildRemoveDnsServerRecordScript - Building script to remove ${rrType} record - host: ${name}, zone: ${zone}, recordData: ${recordData}")
+        log.debug("buildRemoveDnsServerRecordScript : ${runCmd}")
+        return runCmd
+    }
+
+    /**
+     * If using a jump server this Powershell securely caches the credential password in a secure string inside
+     * the profile of the user on the jump server. The credential can only be used by the user who created it and
+     * only from the same server (Uses Windows DPAPI)
+     * SecureString will be saved to the cache file named %LOCALAPPDATA%\<User SID>-dnsPlugin.ss
+     *
+     * Username is the Integration service account
+     */
+    public static String buildCacheCredentialScript(String username, String password) {
+        String runCmd
+        def template = MicrosoftDnsPluginHelper.templateHelperScript()
+        def encodedPassword = password.getBytes("UTF-8").encodeBase64().toString()
+        def userCmd = '''
+        #
+        $rtn=Export-MorpheusCredential -Password <%password%>
+        '''
+        def userScript = userCmd.stripIndent()
+                .replace("<%password%>",encodedPassword)
+        runCmd = template.replace("<%usercode%>",userScript)
+        log.info("buildCacheCredentialScript - Building script to securely cache credentials for ${username}")
+        // Dont debug runCmd as it contains creds
+        return runCmd
+    }
+
+
+
+    /**
+     * This Powershell tests access to the Dns Services on the local Dns server or with cached credential via a
+     * jump server
+     * @param serviceHost
+     * @param serviceType
+     */
+    public static String buildTestDnsServiceScript(String serviceHost, String serviceType) {
+        String runCmd
+        def template = MicrosoftDnsPluginHelper.templateHelperScript()
+        def userCmd = '''
+        #
+        $rtn=Test-MorpheusServicePath -ServiceHost "<%servicehost%>" -ServiceType "<%servicetype%>"
+        '''
+        log.info("buildTestDnsServiceScript - Building script to test access to DNS Services")
+        def userScript = userCmd.stripIndent()
+                .replace("<%servicehost%>",serviceHost ?: "")
+                .replace("<%servicetype%>", serviceType)
+        // Load Template and add the userScript
+        runCmd = template.replace("<%usercode%>",userScript)
+        log.debug("buildTestDnsServiceScript - ${runCmd}")
+        return runCmd
+    }
+
 }

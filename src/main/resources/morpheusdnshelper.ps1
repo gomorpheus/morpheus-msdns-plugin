@@ -342,13 +342,18 @@ Function Test-DnsServicePath {
             $ret.cmdOut.dnsServer = Get-DnsServerSetting @dnsParams | Select-Object -Property computerName, @{n="version";e={"{0}.{1}.{2}" -f $_.MajorVersion,$_.MinorVersion,$_.BuildNumber}}
         }
         catch {
-            $ret.status = 1
-            $ret.errOut = [PSCustomObject]@{message=$_.Exception.Message}
+            if ($_.Exception.ErrorData) {
+                $ret.status = $_.Exception.ErrorData.error_Code
+                $ret.errOut = $_.Exception.ErrorData | Select-Object -Property errorSource,message, error_Category,error_Code, error_WindowsErrorMessage
+            } else {
+                $ret.status = 1
+                $ret.errOut = [PSCustomObject]@{message=$_.Exception.Message}
+            }
         }
         $ret
     } #End $testBlock
 
-    # key details on how sevices are accessed
+    # key details on how services are accessed
     $serviceProfile = [PSCustomObject]@{
         rpcHost=$Null;                # Morpheus connects to the rpcHost
         rpcType=$RpcType;             # how Morpheus is connecting
@@ -370,12 +375,14 @@ Function Test-DnsServicePath {
                 $serviceProfile.rpcHost=$ServiceHost
                 $serviceProfile.serviceHost=$ServiceHost
                 $serviceProfile.serviceType = "winrm"
+                break
             }
             "wmi" {
                 $TestParams.Add("ArgumentList",$ServiceHost)
                 $serviceProfile.rpcHost=[Environment]::MachineName
                 $serviceProfile.serviceHost=$ServiceHost
                 $serviceProfile.serviceType = "wmi"
+                break
             }
         }
     } else {
@@ -393,13 +400,22 @@ Function Test-DnsServicePath {
             return $cred
         }
         $testParams.Add("Credential",$cred.cmdOut.cred)
-        #when using credentials need a computername even if its localhost or .
-        if (-Not $testParams.ContainsKey("ComputerName")) {$testParams.Add("ComputerName",".")}
+        #when using credentials ComputerName must also be specified even if its local machine name
+        if (-Not $testParams.ContainsKey("ComputerName")) {$testParams.Add("ComputerName",[Environment]::MachineName)}
     }
-
-    #Perform test via Invoke-Command
-    $rtn = Invoke-Command @testParams
-    $rtn.cmdOut.serviceProfile = $serviceProfile
+    #Perform test via Invoke-Command parameter splatting
+    try {
+        $rtn = Invoke-Command @testParams
+    }
+    catch {
+        #Catch any error with the Invoke-Command
+        $rtn.status = 1
+        $rtn.errOut = [PSCustomObject]@{message=$_.Exception.Message}
+    }
+    finally {
+        #Add the serviceProfile to cmdOut
+        $rtn.cmdOut.serviceProfile = $serviceProfile
+    }
     return $rtn
 }
 
@@ -409,11 +425,17 @@ Function Test-DnsServicePath {
 Function Test-MorpheusServicePath {
     [CmdletBinding()]
     param(
-        $Computer=$Null
+        [Alias("Computer")]
+        [String]$ServiceHost=$Null,
+        [ValidateSet("winrm","wmi","local")]
+        [String]$ServiceType
     )
 
     $rtn = [PSCustomObject]@{status=0;cmdOut=$Null;errOut=$Null}
-    #rpcInfo - how is Morpheus connecting
+    if (!$ServiceType) {
+        $ServiceType = if ($ServiceHost) {"wmi"} else {"local"}
+    }
+    #rpcInfo - how is Morpheus connecting?
     $rpcInfo = Get-RpcSessionInfo
     if ($rpcInfo.status -gt 0) {
         return $rpcInfo
@@ -427,30 +449,25 @@ Function Test-MorpheusServicePath {
     } else {
         $rpcType = "unknown"
     }
-    # initial parameters
+    # initial parameters - useCachedCredential if rpcSession is Network NTLM
     $testParams = @{
         ErrorAction="Stop";
         UseCachedCredential=($rpcInfo.cmdOut.isNetwork -And ($rpcInfo.cmdOut.isNtlmToken -Or $rpcInfo.cmdOut.authenticationType -eq "NTLM"));
         RpcType=$rpcType
     }
-
-    if ($Computer) {
-        $testParams.Add("ServiceHost",$Computer)
-        $testParams.Add("ServiceType","wmi")
-        $soaServers = Get-AuthoritativeServers -Name $Computer
+    if ($ServiceHost) {
+        $testParams.Add("ServiceHost",$ServiceHost)
+        $soaServers = Get-AuthoritativeServers -Name $ServiceHost
+        #ServiceHost is remote: ServiceType cannot be local and must be wmi or winrm - default is wmi
+        if ($ServiceType -eq "local") {$ServiceType = "wmi"}
     } else {
-        $testParams.Add("ServiceType","local")
+        #Null ServiceHost - only test local service
+        $ServiceType = "local"
         $soaServers = Get-AuthoritativeServers
     }
-
-    # Run Test 1st test (local or wmi)
+    $testParams.Add("ServiceType",$ServiceType)
+    # Run Test
     $rtn = Test-DnsServicePath @testParams
-    if ($rtn.status -gt 0 -And $Computer) {
-        #If no success try winrm
-        $testParams.Item("ServiceType") = "winrm"
-        $rtn = Test-DnsServicePath @testParams
-    }
-
     # Add DomainSOAServers to the response
     $rtn.cmdOut.domainSOAServers = $soaServers.cmdOut
     # Add the original Morpheus initiated rpcSession to the return object
