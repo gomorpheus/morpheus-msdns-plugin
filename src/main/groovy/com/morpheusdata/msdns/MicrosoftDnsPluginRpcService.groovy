@@ -14,9 +14,17 @@ import groovy.util.logging.Slf4j
 class MicrosoftDnsPluginRpcService {
 
     MorpheusContext morpheusContext
+    private final static Map errorCodes = [
+            0 : [isError: false, msg: "Command completed successfully"],
+            9711 : [isError: true, msg: "A matching DNS record already exists"],
+            9714 : [isError: false, msg: "The DNS Record does not exist"],
+            9715 : [isError: false, msg: "Forward record added but unable to create corresponding PTR Record"],
+            9601 : [isError: true, msg: "The DNS Zone does not exist"],
+            9563 : [isError: true, msg: "The record could not be created because this part of the DNS namespace has been delegated to another server"],
+            1722 : [isError: true, msg: "The server is not a DNS Server - the rpc server is unavailable"]
+    ]
 
-    public MicrosoftDnsPluginRpcService(MorpheusContext morpheusContext) {
-
+    MicrosoftDnsPluginRpcService(MorpheusContext morpheusContext) {
         this.morpheusContext = morpheusContext
         log.info("MicrosoftDnsPluginRpcService - Constructor called - injecting MorpheusContext")
     }
@@ -89,13 +97,12 @@ class MicrosoftDnsPluginRpcService {
             rpcCall.setErrorCode(rpcData.status?.toString())
             if (rpcResult.success) {
                 log.debug("executeCommand - TaskResult using transport ${rpcTransport} - ${rpcResult.toMap()}")
-                if (rpcData.status == 0) {
-                    rpcCall.success = true
-                    rpcCall.setMsg("Successful rpc response from ${rpcHost} via ${rpcTransport}")
+                rpcCall.setSuccess(!(isErrorLevel(rpcData.status)))
+                if (rpcCall.success) {
+                    rpcCall.setMsg("Successful rpc response from ${rpcHost} via ${rpcTransport}: ${getErrorMsg(rpcData.status)}")
                 } else {
                     log.warn("executeCommand - rpc completed ok but response indicates a failure status ${rpcData}")
-                    rpcCall.success = false
-                    rpcCall.setMsg("Error rpc response from ${rpcHost} via ${rpcTransport}")
+                    rpcCall.setMsg("Warning: Unsuccessful rpc response from ${rpcHost} via ${rpcTransport}: ${getErrorMsg(rpcData.status)}")
                     rpcCall.addError("executeCommand",rpcData.errOut?.message)
                 }
             } else {
@@ -145,7 +152,7 @@ class MicrosoftDnsPluginRpcService {
         if (result?.data) {
             try {
                 log.debug("processTaskResult - Raw json rpcData ${result.data}")
-                rpcData = jsonSlurper.parseText(result.data)
+                rpcData = jsonSlurper.parseText(result.data) as Map
                 log.debug("processTaskResult - MicrosoftDns Rpc result Status ${rpcData}")
             }
             catch (e) {
@@ -161,6 +168,14 @@ class MicrosoftDnsPluginRpcService {
             rpcData.errOut = [message: "Rpc process failed to return any usable data. Check Credentials and rpc details"]
         }
         return rpcData
+    }
+
+    static Boolean isErrorLevel(code) {
+        return errorCodes.getOrDefault(code,[isError: true,msg: "Unknown Message for error code ${code}"]).isError
+    }
+
+    static String getErrorMsg(code) {
+        return errorCodes.getOrDefault(code,[isError: true,msg: "Unknown Message for error code ${code}"]).msg
     }
 
 }
