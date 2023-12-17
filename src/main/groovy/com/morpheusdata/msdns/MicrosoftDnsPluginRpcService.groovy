@@ -16,7 +16,7 @@ class MicrosoftDnsPluginRpcService {
     MorpheusContext morpheusContext
     private final static Map errorCodes = [
             0 : [isError: false, msg: "Command completed successfully"],
-            9711 : [isError: true, msg: "A matching DNS record already exists"],
+            9711 : [isError: false, msg: "A matching DNS record already exists"],
             9714 : [isError: false, msg: "The DNS Record does not exist"],
             9715 : [isError: false, msg: "Forward record added but unable to create corresponding PTR Record"],
             9601 : [isError: true, msg: "The DNS Zone does not exist"],
@@ -100,9 +100,15 @@ class MicrosoftDnsPluginRpcService {
                 rpcCall.setSuccess(!(isErrorLevel(rpcData.status)))
                 if (rpcCall.success) {
                     rpcCall.setMsg("Successful rpc response from ${rpcHost} via ${rpcTransport}: ${getErrorMsg(rpcData.status)}")
+                    // rpcCall successful but it could be masked - log a warning if non-zero status
+                    if (rpcData.status > 0) {
+                        log.warn("executeCommand - Masking error from DNS - ${rpcHost} via ${rpcTransport}. Status: ${rpcData.status} : ${getErrorMsg(rpcData.status)}")
+                    } else {
+                        log.info("executeCommand - ${rpcHost} via ${rpcTransport}: ${getErrorMsg(rpcData.status)}")
+                    }
                 } else {
                     log.warn("executeCommand - rpc completed ok but response indicates a failure status ${rpcData}")
-                    rpcCall.setMsg("Warning: Unsuccessful rpc response from ${rpcHost} via ${rpcTransport}: ${getErrorMsg(rpcData.status)}")
+                    rpcCall.setMsg("Warning: Unsuccessful rpc response from ${rpcHost} via ${rpcTransport}. Status: ${rpcData.status} : ${getErrorMsg(rpcData.status)}")
                     rpcCall.addError("executeCommand",rpcData.errOut?.message)
                 }
             } else {
