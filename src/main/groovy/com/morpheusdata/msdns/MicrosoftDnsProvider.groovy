@@ -98,25 +98,21 @@ class MicrosoftDnsProvider implements DNSProvider {
      */
     @Override
     ServiceResponse createRecord(AccountIntegration integration, NetworkDomainRecord record, Map opts) {
-
         log.debug("createRecord - Request record: ${record.getProperties()}")
         log.debug("createRecord - Request opts: ${opts}")
         log.info("createRecord - integration ${integration.name} - Received request to create resource record")
-
         ServiceResponse<NetworkDomainRecord> validateRecord = validateDnsRecord(record)
         if (!validateRecord.success) {
             // Failed validation
             return validateRecord
         }
-
         ServiceResponse rpcResult
         ServiceResponse<NetworkDomainRecord> addResult = ServiceResponse.prepare()
         def config = integration.getConfigMap()
         String computerName = integration.servicePath ?: "" // DnsServer if going via a service box
         String serviceType = config?.serviceType
-        Boolean createPtrRecord = (integration.serviceFlag == null || integration.serviceFlag)
+        Boolean createPtrRecord = (integration.serviceFlag == null) ? false : integration.serviceFlag
         String zone = record.networkDomain?.name // DNS Zone
-
         try {
             String command = MicrosoftDnsPluginHelper.buildAddDnsRecordScript(record.type, record.name, zone, record.content, record.ttl, createPtrRecord, computerName, serviceType)
             rpcResult = rpcService.executeCommand(command, integration)
@@ -126,50 +122,37 @@ class MicrosoftDnsProvider implements DNSProvider {
             return ServiceResponse.error("Failed to create DNS record via Integration ${integration.name} - exception ${e.getMessage()}")
         }
         if (rpcResult.success) {
+            //rpc process has returned a successful response - process the record
             def rpcData = rpcResult.getData()
-            if (rpcData) {
-                //got response from DNS check rpcData.status
-                log.info("createRecord - integration ${integration.name} : returned rpcData : ${rpcData}")
-                if (rpcData?.status == 0 || rpcData?.status == 9715) {
-                    // good result 9715 means fwd created but PTR failed
-                    def returnedDnsRecords = rpcData?.cmdOut
-                    log.debug("createRecord - Rpc Process returned matching newDnsRecords : ${returnedDnsRecords}")
-                    def newDnsRecord = returnedDnsRecords.find {(it.recordData.startsWithIgnoreCase(record.content))}
-                    if (newDnsRecord) {
-                        log.info("createRecord - integration ${integration.name} : rpcData returned new record ${newDnsRecord}")
-                        //Update record data from the confirmed response returned from DNS
-                        record.name = newDnsRecord.hostName
-                        record.internalId = newDnsRecord.recordData
-                        record.externalId = newDnsRecord.distinguishedName
-                        record.content = newDnsRecord.recordData
-                        record.recordData = newDnsRecord.recordData
-                        log.info("createRecord - integration ${integration.name} - Successfully created ${record.type} record - host: ${record.name}, zone: ${zone}, data: ${record.recordData}")
-                        addResult.success = true
-                        addResult.msg = "Successfully created ${record.type} record ${record.name} in zone ${zone} data ${record.recordData}"
-                        addResult.data = record
-                    } else {
-                        addResult.success = false
-                        addResult.error = "Failed to verify that the record was created via the DNS Services"
-                        addResult.data = record
-                    }
-                } else {
-                    // rpc returned error non-zero code
-                    log.warn("createRecord - integration ${integration.name} - Failed to create DNS Resource Record ${rpcData}")
-                    addResult.success = false
-                    addResult.error = rpcData.errOut?.message ?: "Failed to create DNS Resource Record"
-                    addResult.data = record
-                }
+            //got response from DNS
+            log.info("createRecord - integration ${integration.name} : returned rpcData : ${rpcData}")
+            def returnedDnsRecords = rpcData.cmdOut
+            log.debug("createRecord - Rpc Process returned matching newDnsRecords : ${returnedDnsRecords}")
+            def newDnsRecord = returnedDnsRecords.find { (it.recordData.startsWithIgnoreCase(record.content)) }
+            if (newDnsRecord) {
+                log.info("createRecord - integration ${integration.name} : rpcData returned new record ${newDnsRecord}")
+                //Update Morpheus record data from the confirmed response returned from DNS
+                record.name = newDnsRecord.hostName
+                record.internalId = newDnsRecord.recordData
+                record.externalId = newDnsRecord.distinguishedName
+                record.content = newDnsRecord.recordData
+                record.recordData = newDnsRecord.recordData
+                log.info("createRecord - integration ${integration.name} - Successfully created ${record.type} record - host: ${record.name}, zone: ${zone}, data: ${record.recordData}")
+                addResult.setSuccess(true)
+                addResult.setMsg("Successfully created ${record.type} record ${record.name} in zone ${zone} data ${record.recordData}")
+                addResult.setData(record)
             } else {
-                log.error("createRecord - integration ${integration.name} - Unable to determine rpcData from Dns Services")
-                addResult.success = false
-                addResult.error = rpcData.errOut?.message ?: "Unable to determine rpc response from Dns Services"
-                addResult.data = record
+                addResult.setSuccess(false)
+                addResult.addError("Failed to verify that the record was created via the DNS Services")
+                addResult.setData(record)
             }
-            return addResult
         } else {
-            //rpc call failed
-            return rpcResult
+            log.error("createRecord - integration ${integration.name} - rpc process failed to create DNS record")
+            addResult.setSuccess(false)
+            addResult.addError("Integration ${integration.name} - failed to Create DNS record: host: ${record.name}, zone: ${zone}, data: ${record.recordData}")
+            addResult.setData(record)
         }
+        return addResult
     }
 
     /**
