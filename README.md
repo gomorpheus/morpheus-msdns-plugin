@@ -1,8 +1,8 @@
 # Microsoft DNS Morpheus Plugin
 
-## Version 3.0
-### Morpheus tested version 6.0.6
-### Plugin API version 0.14.4 
+## Version 3.2
+### Morpheus tested version 6.2.4
+### Plugin API version 0.15.7
 
 ## Introduction 
 This is the official Morpheus plugin for interacting with Microsoft DNS. This automates functions as it relates to automatically creating DNS Records and cleaning up DNS records both during workload provisioning and manual. It should be noted that if joining a VM to a Domain, this integration is not needed as the Domain joining typically auto creates a zone record. This was originally embedded into morpheus and is being extracted for easier maintenance
@@ -19,43 +19,42 @@ A jar will be produced in the `build/lib` folder that can be uploaded into a Mor
 
 Once the plugin is loaded in the environment. Microsoft DNS becomes available in `Infrastructure -> Network -> Integrations`.
 
-## New with v3.0
+## New with v3.2   
+### Version Alignment
+Align the versioning so the the point release matches the supported Morpheus point release. So 3.2 will be compatible with the latest supported Morpheus 6.2 version at the time of release.
+### Custom Powershell Script Module
+All Morpheus DNS related Powershell functions are contained in a Powershell script file which is automatically downloaded to the RPC SERVER and stored in the LocalAppData profile for the service account user. The file contents are md5 checked to ensure the file is not tampered with. The module is refreshed from the plugin if the md5 sum does not match.
+The module contains custom function designed to interface with the MsDns Plugin via json objects.
 
-All Morpheus DNS related Powershell functions are contained in a Powershell script file which is downloaded to the RPC SERVER and staored in the LocalAppData profile for the service account user. The file contents are md5 checked to ensure the file is not tampered with. The module is refreshed from the plugin if the md5 sum does not match.
-The module contains custom function designed to interface with the Plugin via json objects
-
-### Local, WinRm and WMI support
-The Powershell Module contains a function (Test-MorpheusServicePath) which when passed the DNS Server as -Computer parameter determines how and if Morpheus can access DNS Services.
-
-Please see the Morpheus Discussion boards (https://discuss.morpheusdata.com) for details.
-
-### Performance improvements 
-
-- Having the Powershell modules installed on the RPC server offers some performance benefits. As scripts are no longer transferred on each RPC call. 
+- Having the Powershell module installed on the RPC SERVER offers some performance benefits. As scripts are no longer transferred on each Rpc call.
+- The module uses a standard json interface between Windows RPC SERVER and Morpheus
 - Parsing DNS resource record properties into json is now much faster.
 
-## New with v2.2.0
+## Morpheus Microsoft DNS Plugin Controls
 
 - Configure the Dns Integration via the MICROSOFT DNS INTEGRATION dialog. To Add a new integration use Administration -> Integrations  and click + NEW INTEGRATION then select Microsoft DNS from the list.
 - To make changes to an existing integration use Administration -> Integrations then click on the Integration NAME link to access the dialog
 
-### Microsoft DNS Integration Dialog
+### Microsoft DNS Integration Dialog Options
 
 - NAME - Enter a name for the Integration
-- RPC SERVER -  **NEW** Enter the Name of the server providing access to the Microsoft DNS Services. This is the Server Morpheus will connect to directly. **NOTE** This will also be the DNS Server if accessing the DNS Services directly.
+- RPC SERVER -  Enter the Name of the server providing access to the Microsoft DNS Services. This is the Server Morpheus will connect to directly. **NOTE** This will also be the DNS Server if accessing the DNS Services directly.
+- USE AGENT FOR RPC checkbox. **NEW in 3.2** Select this option to have the Plugin use a configured Agent to handle the Morpheus to Windows Rpc connection. The RPC SERVER should be an instance or managed vm and the Morpheus Agent should be configured to Logon As the DNS Service user.
 - CREDENTIALS - Provide account credentials for the integration. You may use credentials already stored in Morpheus or create new Username/Password credentials.
 - ZONE FILTER - Zones matching the zone filter will be imported and managed by the integration. Leave blank to import DNS forward and reverse zones discovered on the DNS Server. See the section below about using Zone Filters.
 - DNS SERVER - If the RPC SERVER is not the server hosting DNS Services then add the FQDN name of the DNS server here. Leave blank if the RPC SERVER is also the DNS Server.
+- SERVICE TYPE - **NEW in 3.2** This text box informs the plugin how the RPC SERVER should contact the DNS SERVER. There are 3 supported options                                        
+    - **local** : When the RPC SERVER is the DNS Server local is the default and ONLY option.
+    - **wmi** : Use wmi when the RPC SERVER contacts the DNS Server over wmi. This is normally the default when using and intermediate RPC SERVER                       
+    - **winrm** : Use this option when the RPC SERVER connects to DNS SERVER over a winrm session. Not often used.                                                    
+- ZONE FILTER was introduced in v2.0 of the plugin. The ZONE FILTER is a comma separated list of glob style filters which can be used to specify the zones that Morpheus will import and sync. 
+    - Glob style filters apply to the zone name ONLY and at a domain level.
+    - The \* character matches any legal Dns character [a-zA-Z0-9_-] 0 or more times.
+    - Wildcarding stops at the . (period)
 - CREATE POINTERS -  have DNS create a PTR record when the forward record is created. 
-
-### Using ZONE FILTERS
-
-ZONE FILTER was introduced in v2.0 of the plugin. The ZONE FILTER is a comma separated list of glob style filters which can be used to specify the zones that Morpheus will import and sync. Glob style filter apply to the zone name ONLY and at a domain level. Wildcarding stops at the . (period)
-
-The \* character matches any legal Dns character [a-zA-Z0-9_-] 0 or more times 
-
-For example a ZONE FILTER string of
-
+ 
+### Using Zone Filters
+In this example a ZONE FILTER string of
 ```
 *.morpheus.com, *.10.in-addr.arpa, d*.us.morpheus.com
 ```
