@@ -21,7 +21,7 @@ Once the plugin is loaded in the environment. Microsoft DNS becomes available in
 
 ## New with v3.2   
 ### Version Alignment
-Align the versioning so the the point release matches the supported Morpheus point release. So 3.2 will be compatible with the latest supported Morpheus 6.2 version at the time of release.
+Align the versioning so the the point release matches the supported Morpheus point release. So 3.2.4 will be compatible with the latest supported Morpheus 6.2 version at the time of release.
 ### Custom Powershell Script Module
 All Morpheus DNS related Powershell functions are contained in a Powershell script file which is automatically downloaded to the RPC SERVER and stored in the LocalAppData profile for the service account user. The file contents are md5 checked to ensure the file is not tampered with. The module is refreshed from the plugin if the md5 sum does not match.
 The module contains custom function designed to interface with the MsDns Plugin via json objects.
@@ -29,6 +29,10 @@ The module contains custom function designed to interface with the MsDns Plugin 
 - Having the Powershell module installed on the RPC SERVER offers some performance benefits. As scripts are no longer transferred on each Rpc call.
 - The module uses a standard json interface between Windows RPC SERVER and Morpheus
 - Parsing DNS resource record properties into json is now much faster.
+
+## Morpheus Agent for Rpc
+This version prepares the plugin to support the Morpheus Windows Agent as an rpc transport.
+NOT supported fully in this release.
 
 ## Morpheus Microsoft DNS Plugin Controls
 
