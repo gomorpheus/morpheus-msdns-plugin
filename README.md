@@ -1,8 +1,8 @@
 # Microsoft DNS Morpheus Plugin
 
-## Version 3.2
-### Morpheus tested version 6.2.4
-### Plugin API version 0.15.7
+## Version 3.3.0
+### Morpheus tested version 6.3.1
+### Plugin API version 1.0.3
 
 ## Introduction 
 This is the official Morpheus plugin for interacting with Microsoft DNS. This automates functions as it relates to automatically creating DNS Records and cleaning up DNS records both during workload provisioning and manually. It should be noted that if joining a Windows VM to an Active Directory Domain, this integration is not needed as the Domain joining typically auto creates a DNS record. This was originally embedded into Morpheus and is being extracted for easier maintenance.
@@ -19,9 +19,9 @@ A jar will be produced in the `build/lib` folder that can be uploaded into a Mor
 
 Once the plugin is loaded in the environment. Microsoft DNS becomes available in `Infrastructure -> Network -> Integrations`.
 
-## New with v3.2   
+## New with v3.3.0  
 ### Version Alignment
-Align the versioning so the the point release matches the supported Morpheus point release. So 3.2 will be compatible with the latest supported Morpheus 6.2 version at the time of release.
+Align the versioning so the the point release matches the supported Morpheus point release. So 3.3 will be compatible with the latest supported Morpheus 6.3 version at the time of release.
 ### Custom Powershell Script Module
 All Morpheus DNS related Powershell functions are contained in a Powershell script file stored within the plugin. The Powershell script is automatically downloaded to the RPC SERVER and stored in the LocalAppData profile for the service account user. The file contents are md5 checked to ensure the file is not tampered with. The module is refreshed from the plugin if the md5 sum does not match.
 The module contains custom functions designed to interface with the MsDns Plugin via json.
