@@ -30,9 +30,8 @@ import com.morpheusdata.model.projection.NetworkDomainIdentityProjection
 import com.morpheusdata.model.projection.NetworkDomainRecordIdentityProjection
 import com.morpheusdata.response.ServiceResponse
 import groovy.util.logging.Slf4j
-import io.reactivex.Single
-import io.reactivex.Observable
-
+import io.reactivex.rxjava3.core.Single
+import io.reactivex.rxjava3.core.Observable
 import java.util.regex.*
 
 /**
@@ -366,7 +365,12 @@ class MicrosoftDnsProvider implements DNSProvider {
         }
     }
 
-     // Cache Zones methods
+    /**
+     * syncs in the Zone records collected bu the rpcService.
+     * NOTE that the json Data returned by the ServiceResponse now has camel case property names
+     * @param integration
+     * @param opts
+     */
     def cacheZones(AccountIntegration integration, Map opts = [:]) {
         try {
             ServiceResponse listResults = listZones(integration)
@@ -398,6 +402,7 @@ class MicrosoftDnsProvider implements DNSProvider {
 
     /**
      * Creates a mapping for networkDomainService.createSyncedNetworkDomain() method on the network context.
+     * NOTE that the json Data returned by the ServiceResponse now has camel case property names
      * @param integration
      * @param addList
      */
@@ -413,9 +418,8 @@ class MicrosoftDnsProvider implements DNSProvider {
             log.info("Adding Zone: ${networkDomain}")
             return networkDomain
         }
-        //TODO Update
-        //getMorpheus().getAsync().getNetwork().getDomain().create(integration.id, missingZonesList).blockingGet()
-        morpheus.network.domain.create(integration.id, missingZonesList).blockingGet()
+        getMorpheus().getAsync().getNetwork().getDomain().create(integration.id,missingZonesList).blockingGet()
+        // deprecated morpheus.network.domain.create(integration.id, missingZonesList).blockingGet()
     }
 
     /**
@@ -424,10 +428,10 @@ class MicrosoftDnsProvider implements DNSProvider {
      * @param updateList
      */
     void updateMatchedZones(AccountIntegration integration, List<SyncTask.UpdateItem<NetworkDomain,Map>> updateList) {
-        def domainsToUpdate = []
-        log.info("updateMatchedZones -  update Zones for ${integration.name} - updated items ${updateList.size()}")
+        List<NetworkDomain> domainsToUpdate = []
+        log.debug("updateMatchedZones -  update Zones for ${integration.name} - updated items ${updateList.size()}")
         for(SyncTask.UpdateItem<NetworkDomain,Map> update in updateList) {
-            NetworkDomain existingItem = update.existingItem as NetworkDomain
+            NetworkDomain existingItem = update.existingItem
             if(existingItem) {
                 Boolean save = false
                 if(!existingItem.externalId) {
@@ -449,32 +453,30 @@ class MicrosoftDnsProvider implements DNSProvider {
             }
         }
         if(domainsToUpdate.size() > 0) {
-            //TODO Update
-            morpheus.network.domain.save(domainsToUpdate).blockingGet()
+            getMorpheus().getAsync().getNetwork().getDomain().bulkSave(domainsToUpdate).blockingGet()
+            // morpheus.network.domain.save(domainsToUpdate).blockingGet()
         }
     }
 
 
     // Cache Zones methods
     def cacheZoneRecords(AccountIntegration integration, Map opts=[:]) {
-
-        getMorpheus().getNetwork().getDomain().listIdentityProjections(integration.id).buffer(50).flatMap { Collection<NetworkDomainIdentityProjection> resourceIdents ->
-            return getMorpheus().getNetwork().getDomain().listById(resourceIdents.collect{it.id})
+        //Use new Async service
+        getMorpheus().getAsync().getNetwork().getDomain().listIdentityProjections(integration.id).buffer(50).concatMap { Collection<NetworkDomainIdentityProjection> resourceIdents ->
+            return getMorpheus().getAsync().getNetwork().getDomain().listById(resourceIdents.collect{it.id})
         }.flatMap { NetworkDomain domain ->
             ServiceResponse listResults = listRecords(integration,domain)
             log.debug("cacheZoneRecords - domain: ${domain.externalId}, listResults: ${listResults}")
-
             if (listResults.success) {
                 List<Map> apiItems = listResults.getData() as List<Map>
                 //Unfortunately the unique identification matching for msdns requires the full record for now... so we have to load all records...this should be fixed
                 Observable<NetworkDomainRecord> domainRecords = getMorpheus().getNetwork().getDomain().getRecord().listIdentityProjections(domain,null).buffer(50).flatMap {domainIdentities ->
-                    getMorpheus().getNetwork().getDomain().getRecord().listById(domainIdentities.collect{it.id})
+                    getMorpheus().getAsync().getNetwork().getDomain().getRecord().listById(domainIdentities.collect{it.id})
                 }
                 SyncTask<NetworkDomainRecord, Map, NetworkDomainRecord> syncTask = new SyncTask<NetworkDomainRecord, Map, NetworkDomainRecord>(domainRecords, apiItems)
                 return syncTask.addMatchFunction {  NetworkDomainRecord domainObject, Map apiItem ->
                     (domainObject.externalId == apiItem['distinguishedName'] && domainObject.internalId == apiItem['recordData']) ||
                             (domainObject.externalId == null && domainObject.type == apiItem['recordType']?.toUpperCase() && domainObject.fqdn == NetworkUtility.getDomainRecordFqdn(apiItem['hostName'] as String, domain.fqdn))
-
                 }.onDelete {removeItems ->
                     log.debug("cacheZoneRecords - Removing domain record ${removeItems}")
                     getMorpheus().getNetwork().getDomain().getRecord().remove(domain, removeItems).blockingGet()
@@ -482,7 +484,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                     addMissingDomainRecords(domain, itemsToAdd)
                 }.withLoadObjectDetails { List<SyncTask.UpdateItemDto<NetworkDomainRecord,Map>> updateItems ->
                     Map<Long, SyncTask.UpdateItemDto<NetworkDomainRecord, Map>> updateItemMap = updateItems.collectEntries { [(it.existingItem.id): it]}
-                    return getMorpheus().getNetwork().getDomain().getRecord().listById(updateItems.collect{it.existingItem.id} as Collection<Long>).map { NetworkDomainRecord domainRecord ->
+                    return getMorpheus().getAsync().getNetwork().getDomain().getRecord().listById(updateItems.collect{it.existingItem.id} as Collection<Long>).map { NetworkDomainRecord domainRecord ->
                         SyncTask.UpdateItemDto<NetworkDomainRecordIdentityProjection, Map> matchItem = updateItemMap[domainRecord.id]
                         return new SyncTask.UpdateItem<NetworkDomainRecord,Map>(existingItem:domainRecord, masterItem:matchItem.masterItem)
                     }
@@ -496,11 +498,10 @@ class MicrosoftDnsProvider implements DNSProvider {
         }.doOnError{ e ->
             log.error("cacheZoneRecords error: ${e}", e)
         }.subscribe()
-
     }
 
     void updateMatchedDomainRecords(List<SyncTask.UpdateItem<NetworkDomainRecord, Map>> updateList) {
-        def records = []
+        List<NetworkDomainRecord> records = []
         updateList?.each { update ->
             NetworkDomainRecord existingItem = update.existingItem
             String recordType = update.masterItem.rr_type
@@ -526,13 +527,12 @@ class MicrosoftDnsProvider implements DNSProvider {
             }
         }
         if(records.size() > 0) {
-            morpheus.network.domain.record.save(records).blockingGet()
+            getMorpheus().getAsync().getNetwork().getDomain().getRecord().bulkSave(records).blockingGet()
         }
     }
 
     void addMissingDomainRecords(NetworkDomain domain, Collection<Map> addList) {
         List<NetworkDomainRecord> records = []
-
         addList?.each {record ->
             if(record['hostName']) {
                 def addConfig = [networkDomain:new NetworkDomain(id: domain.id), fqdn:NetworkUtility.getDomainRecordFqdn(record['hostName'] as String, domain.fqdn),
@@ -549,8 +549,8 @@ class MicrosoftDnsProvider implements DNSProvider {
             }
 
         }
-        //TODO update
-        morpheus.network.domain.record.create(domain,records).blockingGet()
+        //deprecated orpheus.network.domain.record.create(domain,records).blockingGet()
+        getMorpheus().getAsync().getNetwork().getDomain().getRecord().create(domain,records).blockingGet()
     }
 
     /**
