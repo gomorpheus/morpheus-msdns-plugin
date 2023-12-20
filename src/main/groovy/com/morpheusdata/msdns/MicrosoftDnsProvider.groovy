@@ -888,6 +888,16 @@ class MicrosoftDnsProvider implements DNSProvider {
                     if (!(record.name ==~ validHost)) {
                         ret.success = false
                         ret.addError("name","Host ${record.name} is not a valid DNS hostname")
+                    }
+                    break
+                case "AAAA" :
+                    if (!(NetworkUtility.validateIpAddr(record.content,true))) {
+                        ret.success = false
+                        ret.addError("content","IP v6 Address ${record?.content} is not valid")
+                    }
+                    if (!(record.name ==~ validHost)) {
+                        ret.success = false
+                        ret.addError("name","Host ${record.name} is not a valid DNS hostname")
                     } 
                     break
                 case "CNAME" : 

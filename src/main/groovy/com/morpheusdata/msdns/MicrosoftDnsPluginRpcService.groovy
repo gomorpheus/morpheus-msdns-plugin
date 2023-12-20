@@ -16,6 +16,7 @@ class MicrosoftDnsPluginRpcService {
     MorpheusContext morpheusContext
     private final static Map errorCodes = [
             0 : [isError: false, msg: "Command completed successfully"],
+            5 : [isError: true, msg: "Access Denied - cannot access DNS Service with credentials provided"],
             13 : [isError: true, msg: "The data for the resource value is invalid"],
             9711 : [isError: false, msg: "A matching DNS record already exists"],
             9714 : [isError: false, msg: "The DNS Record does not exist"],
