@@ -25,18 +25,27 @@ import java.nio.charset.StandardCharsets;
 @Slf4j
 class MicrosoftDnsPluginHelper {
 
-    // Powershell Helper module resource name - should be in resources folder available in the classPath
+    /*
+    * Powershell Helper module resource name.
+    * Must be located in the resources folder available in the classPath
+    */
     private static String getHelperResourceName() {
         return "morpheusdnshelper.ps1"
     }
 
-    // Returns the Powershell Helper module file name for use on Windows RPC host
-    // The Path is always %LOCALAPPDATA% on the Windows Host
+    /*
+    * Returns the Powershell Helper module file name
+    * The Path is always %LOCALAPPDATA% on the Windows Host
+    * The file name should match the plugin version
+    */
     public static String getHelperFile() {
-        return "morpheusDnsPluginHelper_v30.ps1"
+        return "morpheusDnsPluginHelper_v33.ps1"
     }
 
-    // Load a Project resource from resourcePath and return a String
+    /*
+    * Loads a Resource from the project and returns a string containing the resource
+    *
+    */
     private static String loadResourceString(String resourcePath) {
         
         try {
