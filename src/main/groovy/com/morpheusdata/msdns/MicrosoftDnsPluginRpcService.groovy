@@ -16,6 +16,7 @@ class MicrosoftDnsPluginRpcService {
     MorpheusContext morpheusContext
     private final static Map errorCodes = [
             0 : [isError: false, msg: "Command completed successfully"],
+            13 : [isError: true, msg: "The data for the resource value is invalid"],
             9711 : [isError: false, msg: "A matching DNS record already exists"],
             9714 : [isError: false, msg: "The DNS Record does not exist"],
             9715 : [isError: false, msg: "Forward record added but unable to create corresponding PTR Record"],
@@ -58,7 +59,10 @@ class MicrosoftDnsPluginRpcService {
                 server = getMorpheus().getAsync().getComputeServer().find(
                     new DataQuery().withFilters(
                         new DataAndFilter(
-                                new DataFilter("hostname","==",rpcHost),
+                                new DataOrFilter(
+                                        new DataFilter("hostname","==",integration.serviceUrl),
+                                        new DataFilter("hostname","==",rpcHost)
+                                ),
                                 new DataFilter("agentInstalled","==",true)
                         ))).blockingGet()
             }
@@ -67,7 +71,7 @@ class MicrosoftDnsPluginRpcService {
                 return ServiceResponse.error("Agent RPC Process - failed to locate ComputeServer with Agent installed.")
             }
             if (server) {
-                log.info("executeCommand - located ComputeServer ${server?.name} with apiKey ${server?.apiKey} - Agent Version ${server.agentVersion}")
+                log.info("executeCommand - located ComputeServer with hostname ${server?.hostname} - apiKey ${server?.apiKey} - Agent Version ${server.agentVersion}")
                 try {
                     rpcResult = getMorpheus().executeCommandOnServer(server,command,false,null,null,null,null,null,true,false,false).blockingGet()
                     log.debug("executeCommand - rpcType:agent - Results -  ${rpcResult.dump()}")
