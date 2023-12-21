@@ -415,7 +415,7 @@ class MicrosoftDnsProvider implements DNSProvider {
             networkDomain.refSource = 'integration'
             networkDomain.zoneType = 'Authoritative'
             networkDomain.publicZone = true
-            log.info("Adding Zone: ${networkDomain}")
+            log.debug("Adding Zone: ${networkDomain}")
             return networkDomain
         }
         getMorpheus().getAsync().getNetwork().getDomain().create(integration.id,missingZonesList).blockingGet()
@@ -447,7 +447,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                 }
 
                 if(save) {
-                    log.info("updateMatchedZones -  ready to update item ${existingItem}")
+                    log.debug("updateMatchedZones -  ready to update item ${existingItem}")
                     domainsToUpdate.add(existingItem)
                 }
             }
@@ -466,10 +466,12 @@ class MicrosoftDnsProvider implements DNSProvider {
             return getMorpheus().getAsync().getNetwork().getDomain().listById(resourceIdents.collect{it.id})
         }.flatMap { NetworkDomain domain ->
             ServiceResponse listResults = listRecords(integration,domain)
+
             log.debug("cacheZoneRecords - domain: ${domain.externalId}, listResults: ${listResults}")
             if (listResults.success) {
                 List<Map> apiItems = listResults.getData() as List<Map>
                 //Unfortunately the unique identification matching for msdns requires the full record for now... so we have to load all records...this should be fixed
+
                 Observable<NetworkDomainRecord> domainRecords = getMorpheus().getNetwork().getDomain().getRecord().listIdentityProjections(domain,null).buffer(50).flatMap {domainIdentities ->
                     getMorpheus().getAsync().getNetwork().getDomain().getRecord().listById(domainIdentities.collect{it.id})
                 }
@@ -1019,6 +1021,7 @@ class MicrosoftDnsProvider implements DNSProvider {
     }
 
     /**
+
      * This method tests if the Morpheus Dns Powershell helper script is available in the %LOCALAPPDATA
      * path in the Service Account user profile. The local copy must match the source md5 chksum to ensure
      * the script file cannot be tampered with. If the helper script file does not exist or fails the chksum 
@@ -1200,5 +1203,6 @@ class MicrosoftDnsProvider implements DNSProvider {
             serviceTest.addError("serviceUrl","Exception raised testing DNS Services : ${e.getMessage()}")
             return serviceTest
         }
+
     }
 }
