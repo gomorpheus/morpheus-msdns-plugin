@@ -34,12 +34,15 @@ class MicrosoftDnsPlugin extends Plugin {
 	@Override
 	void initialize() {
 		MicrosoftDnsProvider msdnsProvider = new MicrosoftDnsProvider(this, morpheus)
+		MicrosoftDnsOptionSourceProvider optionSourceProvider = new MicrosoftDnsOptionSourceProvider(this,morpheus)
 		this.pluginProviders.put("microsoft.dns", msdnsProvider)
+		this.pluginProviders.put(optionSourceProvider.getCode(),optionSourceProvider)
 		this.setName("Microsoft DNS")
 		this.setAuthor("Stephen Potts")
 		this.setRenderer(new HandlebarsRenderer(this.classLoader))
 		MicrosoftDnsPluginController msDnsApi = new MicrosoftDnsPluginController(this, morpheus)
 		this.controllers.add(msDnsApi)
+
 	}
 
 	/**
