@@ -42,8 +42,8 @@ class MicrosoftDnsOptionSourceProvider implements OptionSourceProvider{
     List<Map> msdnsServiceTypeList(args) {
         return [
             [name: "DNS Service is Local", value: "local"],
-            [name: "use Wmi to access DNS (default)", value: "wmi"],
-            [name: "Use a winRm Session to access DNS", value: "winrm"]
+            [name: "Use Wmi to access DNS Service (default)", value: "wmi"],
+            [name: "Start a winRm Session on the DNS Server to access DNS", value: "winrm"]
         ]
     }
 }

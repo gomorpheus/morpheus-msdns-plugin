@@ -233,6 +233,7 @@ class MicrosoftDnsProvider implements DNSProvider {
             Map integrationConfig = integration.getConfigMap()
             // Are we using Agent or winRm for transport
             String rpcTransport = (integrationConfig?.agentRpc && integrationConfig?.agentRpc == "on") ? "agent" : "winrm"
+            Boolean importZoneRecords = (integrationConfig?.inventoryExisting && integrationConfig?.inventoryExisting == "on")
             ServiceResponse rpcTest = testRpcConnection(integration)
             log.info("refresh - integration ${integration.name} - checking the integration is online - ${integration.serviceUrl} - ${rpcTest.success}")
             if(rpcTest.success) {
@@ -240,7 +241,12 @@ class MicrosoftDnsProvider implements DNSProvider {
                 if (testDns.success) {
                     Date now = new Date()
                     cacheZones(integration)
-                    cacheZoneRecords(integration)
+                    if (importZoneRecords) {
+                        log.info("refresh - integration: ${integration.name} - Importing existing Resource Records matching Zone filter")
+                        cacheZoneRecords(integration)
+                    } else {
+                        log.info("refresh - integration: ${integration.name} - This integration will not import existing DNS Resource Records")
+                    }
                     log.info("refresh - integration: ${integration.name} - Sync Completed in ${new Date().time - now.time}ms")
                     getMorpheus().getAsync().getIntegration().updateAccountIntegrationStatus(integration, AccountIntegration.Status.ok).subscribe().dispose()
                     //getMorpheus().getIntegration().updateAccountIntegrationStatus(integration, AccountIntegration.Status.ok).subscribe().dispose()
@@ -570,7 +576,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                     fieldLabel: 'RPC Server', 
                     fieldContext: 'domain', 
                     required: true,
-                    helpText: 'Name of the server providing access to MS DNS Services. May also be the DNS Server', 
+                    helpText: 'Name of the server hosting the Morpheus Rpc connection. May also be the DNS Server',
                     displayOrder: 0
                 ),
                 new OptionType(
@@ -586,10 +592,10 @@ class MicrosoftDnsProvider implements DNSProvider {
                     editable:true,
                     global:false,
                     placeHolder:null,
-                    helpBlock:'Use Morpheus agent for Rpc connection, Agent should LogOn as Service Account',
+                    helpBlock:'Use Morpheus agent for Rpc transport, Agent should LogOn as Service Account',
                     defaultValue:'off',
                     custom:false,
-                    displayOrder:1
+                    displayOrder:5
                 ),
                 new OptionType(
                     code: 'accountIntegration.microsoft.dns.credentials', 
@@ -612,7 +618,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                     fieldLabel: 'Username', 
                     fieldContext: 'domain', 
                     required: true, 
-                    displayOrder: 20,
+                    displayOrder: 11,
                     localCredential: true
                 ),
                 new OptionType(
@@ -623,7 +629,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                     fieldLabel: 'Password', 
                     fieldContext: 'domain', 
                     required: true, 
-                    displayOrder: 30,
+                    displayOrder: 12,
                     localCredential: true
                 ),
                 new OptionType(
@@ -642,7 +648,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                     helpBlock:'Name of DNS Server. Integration will use RPC Server is left blank', 
                     defaultValue:null, 
                     custom:false, 
-                    displayOrder:75
+                    displayOrder:20
                 ),
                 new OptionType(
                     code:'accountIntegration.microsoft.dns.serviceType',
@@ -652,16 +658,11 @@ class MicrosoftDnsProvider implements DNSProvider {
                     fieldName:'serviceType',
                     fieldLabel:'Service Type',
                     fieldContext:'config',
-                    //required:false,
-                    //enabled:true,
-                    //editable:true,
-                    //global:false,
+                    required:true,
                     optionSource:'msdnsServiceTypeList',
-                    //placeHolder:'choose 1 of wmi, winrm or local',
-                    helpBlock:'How should the RPC Server access DNS Services on the DNS Server',
-                    //defaultValue:'local',
+                    helpBlock:'How Rpc Server should access DNS Services on the DNS Server',
                     custom:false,
-                    displayOrder:76
+                    displayOrder:30
                 ),
                 new OptionType(
                     code:'accountIntegration.microsoft.dns.serviceFlag', 
@@ -671,15 +672,9 @@ class MicrosoftDnsProvider implements DNSProvider {
                     fieldName:'serviceFlag', 
                     fieldCode: 'gomorpheus.label.dnsPointerCreate', 
                     fieldLabel:'Create Pointers', 
-                    fieldContext:'domain', 
-                    required:false, 
-                    enabled:true, 
-                    editable:true, 
-                    global:false,
-                    placeHolder:null, 
-                    helpBlock:'', 
-                    defaultValue:'on', 
-                    custom:false, 
+                    fieldContext:'domain',
+                    helpBlock:'Have DNS automatically attempt to create a PTR record with the forward record',
+                    defaultValue:'on',
                     displayOrder:80
                 ),
                 new OptionType(
@@ -689,9 +684,23 @@ class MicrosoftDnsProvider implements DNSProvider {
                     fieldName: 'zoneFilter', 
                     fieldLabel: 'Zone Filter', 
                     required: false,
-                    helpText: 'Comma separated string of glob style zone names to import. All zones are imported if blank',
+                    helpText: 'Comma separated string of glob style zone names to import. All zones are imported if left blank',
                     fieldContext:'config',
-                    displayOrder: 70
+                    displayOrder: 40
+                ),
+                new OptionType(
+                    code: 'accountIntegration.microsoft.dns.inventoryExisting',
+                    name: 'Inventory Existing',
+                    inputType: OptionType.InputType.CHECKBOX,
+                    defaultValue: 'off',
+                    fieldName: 'inventoryExisting',
+                    fieldLabel:' Inventory Existing',
+                    fieldContext: 'config',
+                    required: false,
+                    enabled:true,
+                    editable:true,
+                    helpBlock:'Import existing Resource Records from imported Zones. Not recommended in large environments',
+                    displayOrder:50
                 )
         ]
     }
@@ -1009,7 +1018,7 @@ class MicrosoftDnsProvider implements DNSProvider {
             def regexFilter = globFilter.replace('.', '\\.').replace('*','[a-zA-Z0-9_-]*')
             // Try compile a regex
             try {
-                return Pattern.compile(regexFilter)
+                return Pattern.compile(regexFilter,Pattern.CASE_INSENSITIVE)
             }
             catch (ex) {
                 log.error("makeZoneFilterRegex: Invalid regex pattern ${regexFilter} derived from zone filter ${zoneFilter}")
