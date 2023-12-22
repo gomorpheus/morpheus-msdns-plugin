@@ -288,6 +288,7 @@ Function Get-RpcSessionInfo {
 Function Test-DnsServicePath {
     [CmdletBinding()]
     param(
+        [Alias("Computer")]
         [String]$ServiceHost=$Null,
         [ValidateSet("winrm","wmi","local")]
         [String]$ServiceType="wmi",
@@ -372,7 +373,7 @@ Function Test-DnsServicePath {
         switch ($ServiceType) {
             "winrm" {
                 $testParams.Add("ComputerName",$ServiceHost)
-                $serviceProfile.rpcHost=$ServiceHost
+                $serviceProfile.rpcHost=[Environment]::MachineName
                 $serviceProfile.serviceHost=$ServiceHost
                 $serviceProfile.serviceType = "winrm"
                 break

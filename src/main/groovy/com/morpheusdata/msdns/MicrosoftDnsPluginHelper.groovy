@@ -74,8 +74,8 @@ class MicrosoftDnsPluginHelper {
 
     public static String morpheusDnsHelperScript() {
         
-        log.debug("morpheusDnsHelperScript - Loading Powershell Module via classLoader. Resource name: ${MicrosoftDnsPluginHelper.getHelperResourceName()}")
-        return MicrosoftDnsPluginHelper.loadResourceString(MicrosoftDnsPluginHelper.getHelperResourceName())
+        log.debug("morpheusDnsHelperScript - Loading Powershell Module via classLoader. Resource name: ${getHelperResourceName()}")
+        return loadResourceString(getHelperResourceName())
     }
 
     /*
@@ -345,7 +345,7 @@ class MicrosoftDnsPluginHelper {
      */
     public static String buildCacheCredentialScript(String username, String password) {
         String runCmd
-        def template = MicrosoftDnsPluginHelper.templateHelperScript()
+        def template = templateHelperScript()
         def encodedPassword = password.getBytes("UTF-8").encodeBase64().toString()
         def userCmd = '''
         #
@@ -369,7 +369,7 @@ class MicrosoftDnsPluginHelper {
      */
     public static String buildTestDnsServiceScript(String serviceHost, String serviceType) {
         String runCmd
-        def template = MicrosoftDnsPluginHelper.templateHelperScript()
+        def template = templateHelperScript()
         def userCmd = '''
         #
         $rtn=Test-MorpheusServicePath -ServiceHost "<%servicehost%>" -ServiceType "<%servicetype%>"
