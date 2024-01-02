@@ -52,11 +52,11 @@ NOT supported fully in this release.
   - Wildcarding stops at the . (period)
   - Leave blank to import ALL forward and reverse zones
 - DNS SERVER - If the RPC SERVER is not the server hosting DNS Services then add the FQDN name of the DNS server here. Leave blank if the RPC SERVER is also the DNS Server.
-- SERVICE TYPE - **NEW in 3.2** This text box informs the plugin how the RPC SERVER should contact the DNS SERVER. There are 3 supported options                                        
+- SERVICE TYPE - **NEW in 3.2** This option informs the plugin how the RPC SERVER should contact the DNS SERVER. There are 3 supported options                                        
   - **local** : When the RPC SERVER is the DNS Server local is the default and ONLY option.
   - **wmi** : Use wmi when the RPC SERVER contacts the DNS Server over wmi. This is normally the default when using and intermediate RPC SERVER                       
   - **winrm** : Use this option when the RPC SERVER connects to DNS SERVER over a winrm session. Not often used.                                                    
-
+- INVENTORY EXISTING - Hove the integration import and sync all DNS records for the matching Zones. Using this option is not recommended for installations with large namespaces.
 - CREATE POINTERS -  have DNS create a PTR record when the forward record is created. 
  
 ### Using Zone Filters
