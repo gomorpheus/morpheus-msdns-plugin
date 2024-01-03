@@ -366,7 +366,7 @@ class MicrosoftDnsProvider implements DNSProvider {
             log.info("verifyAccountIntegration - Integration: ${integration.name} - Updated integration ServiceResponse ${verify.data.getProperties()}" )
             return verify
         } catch(e) {
-            log.error("verifyAccountIntegration - Integration: ${integration.name} : Raised Exception ${e.getStackTrace()}")
+            log.error("verifyAccountIntegration - Integration: ${integration.name} : Raised Exception ${e.getMessage()}")
             verify.success = false
             verify.addError(e.getMessage() ?: "Unknown exception raised in verifyAccountIntegration")
             return verify
