@@ -80,8 +80,10 @@ This plugin includes improvements in error handling and validation. Connectivity
 
 ### DNS Record validation and Error Handling
 
-- DNS records are now fully validated before they are created. Only record types A, CNAME and PTR are currently supported.
-- The integration will return an error if a matching DNS record already exists in DNS. This is **new** behaviour and prevents duplicates being added to Morpheus
+- DNS records are now fully validated before they are created. Only record types A, AAAA, CNAME and PTR are currently supported.
+- Adding a DNS Record which already exists (ie fqdn and IPAddress match an existing record in DNS) would normally return an error (code 9711) - this is masked to a success to prevent Morpheus aborting the provision.
+- Removing a DNS Record that does not exist in DNS (error 9714) is also masked to success to have Morpheus delete its copy
+- If a fwd record is created but the PTR record fails (due to missing PTR zone error 9715). This is also masked to success to prevent Morpheus aborting the Provision 
 - All error are logged to the Morpheus Health logs
 
 ### Intermediary Server Support
@@ -91,10 +93,15 @@ To use an intermediate server:
 - enter the fqdn of the Dns Server as DNS SERVER
 - enter **wmi** or **winrm** as the SERVICE TYPE
 
+** NOTE ** the intermediate Server MUST have the Powershell DNS Server Management Tools Installed
+
 This plugin uses a technique where Powershell script blocks are executed using Invoke-Command.
 Using securely cached credentials stored in the local user profile on the intermediate server, Invoke-Command can execute script blocks on remote computers (-ComputerName parameter) with specified Credentials (-Credential). 
 Using this method allows for a Kerberos login from the Intermediate Server to the DNS Server overcoming NTLM impersonation restrictions. Credentials are securely cached using Windows DPAPI and can only be access by the computer and user account that cached them. When using an intermediate server 2 methods can be employed to connect the DNS Services.
-Using winrm the script blocks are invoked on the DNS Server using PS Remoting which will require winRm access on the DNS Server. A second technique is to use WMI rpc calls (where the DNS cmdlets specify a -Computername parameter). In this case the service account will require access to the Microsoft DNS WMI namespace on the DNS Server and in most cases the intermediate windows server must be tusted for delegation.
+Using winrm the script blocks are invoked on the DNS Server using PS Remoting which will require winRm access on the DNS Server. A second technique is to use WMI rpc calls (where the DNS cmdlets specify a -Computername parameter). 
+In this case the service account will require access to the Microsoft DNS WMI namespace on the DNS Server and in most cases the intermediate windows server Computer Account must be trusted for delegation in Active Directory Users and Computer to allow Kerberos access to any service unley you know the specific Service Principal Names for your environment.
+
+**NOTE** that if the Morpheus Agent is used as Rpc Transport and the agent logs in with the service Credentials then delegation of the Computer Account may not be required as the service runs in much the same way as an interactive login.
 
 ### AWS Directory Services Support
 
