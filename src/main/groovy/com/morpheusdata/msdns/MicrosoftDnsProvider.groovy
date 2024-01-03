@@ -283,7 +283,7 @@ class MicrosoftDnsProvider implements DNSProvider {
         String rpcTransport = (config?.agentRpc && config?.agentRpc == "on") ? "agent" : "winrm"
         //def credentialService = morpheusContext.getAccountCredential()
         log.debug("verifyAccountIntegration - Validating integration: ${integration.getProperties()} - opts: ${opts}")
-        log.info("verifyAccountIntegration - integration: ${integration.name} - serviceUrl: ${integration.serviceUrl}, servicePath: ${integration.serviceUrl}, config: ${config}")
+        log.info("verifyAccountIntegration - integration: ${integration.name} - serviceUrl: ${integration.serviceUrl}, servicePath: ${integration.servicePath}, config: ${config}")
         try {
             // Validate Form options
             verify.errors = [:]
@@ -311,9 +311,8 @@ class MicrosoftDnsProvider implements DNSProvider {
                     verify.errors["serviceType"] = "Service type must be wmi or winrm"
                 }
             } else {
-                if (config.serviceType != "local") {
-                    verify.errors["serviceType"] = "Service type must be local when not using an Intermediate Server"
-                }
+                // serviceType MUST be local
+                integration.setConfigProperty("serviceType","local")
             }
             if (verify.errors.size() > 0) {
                 // Errors on form - return these errors now
@@ -323,14 +322,17 @@ class MicrosoftDnsProvider implements DNSProvider {
             }
             // Validate connectivity to serviceUrl over WinRM if rpcType is winrm - return immediately on a fail
             if (rpcTransport == "winrm") {
-                def port = integration.servicePort ?: 5985
-                def serviceHostOnline = ConnectionUtils.testHostConnectivity(integration.serviceUrl, port, false, true, null)
+                String port = integration.servicePort ?: "5985"
+                log.info("verifyAccountIntegration - integration: ${integration.name} - Transport ${rpcTransport} port ${port}")
+                def serviceHostOnline = ConnectionUtils.testHostConnectivity(integration.serviceUrl, port.toInteger(), false, true, null)
                 if (!serviceHostOnline) {
                     log.warn("verifyAccountIntegration - integration: ${integration.name} - no winRm connectivity to serviceUrl: ${integration.serviceUrl}")
-                    verify.errors["serviceUrl"] = "serviceUrl ${integration.serviceUrl} not reachable over WinRM (port 5985)"
+                    verify.errors["serviceUrl"] = "serviceUrl ${integration.serviceUrl} not reachable over WinRM (port ${port})"
                     verify.success = false
                     return verify
                 }
+            } else {
+                log.info("verifyAccountIntegration - integration: ${integration.name} - Using Morpheus agent as Rpc Transport")
             }
             //Quickly test the rpcProcess before conducting a more thorough test of DNS Services
             ServiceResponse rpcTest = testRpcConnection(integration)
@@ -364,7 +366,7 @@ class MicrosoftDnsProvider implements DNSProvider {
             log.info("verifyAccountIntegration - Integration: ${integration.name} - Updated integration ServiceResponse ${verify.data.getProperties()}" )
             return verify
         } catch(e) {
-            log.error("verifyAccountIntegration - Integration: ${integration.name} : Raised Exception ${e}")
+            log.error("verifyAccountIntegration - Integration: ${integration.name} : Raised Exception ${e.getStackTrace()}")
             verify.success = false
             verify.addError(e.getMessage() ?: "Unknown exception raised in verifyAccountIntegration")
             return verify
@@ -580,6 +582,19 @@ class MicrosoftDnsProvider implements DNSProvider {
                     displayOrder: 0
                 ),
                 new OptionType(
+                        code: 'accountIntegration.microsoft.dns.servicePort',
+                        name: 'Rpc Port',
+                        inputType: OptionType.InputType.TEXT,
+                        fieldName: 'servicePort',
+                        fieldLabel: 'Rpc Port',
+                        fieldContext: 'domain',
+                        required: false,
+                        defaultValue: '5985',
+                        displayOrder: 2,
+                        visibleOnCode: 'accountIntegration.microsoft.dns.agentRpc:off',
+                        helpBlock: 'winRm Rpc service port number (5985/5986)'
+                ),
+                new OptionType(
                     code: 'accountIntegration.microsoft.dns.agentRpc',
                     name: 'agentRpc',
                     inputType: OptionType.InputType.CHECKBOX,
@@ -646,8 +661,7 @@ class MicrosoftDnsProvider implements DNSProvider {
                     global:false,
                     placeHolder:null,
                     helpBlock:'Name of DNS Server. Integration will use RPC Server is left blank', 
-                    defaultValue:null, 
-                    custom:false, 
+                    defaultValue:null,
                     displayOrder:20
                 ),
                 new OptionType(
@@ -658,10 +672,10 @@ class MicrosoftDnsProvider implements DNSProvider {
                     fieldName:'serviceType',
                     fieldLabel:'Service Type',
                     fieldContext:'config',
-                    required:true,
+                    required: false,
                     optionSource:'msdnsServiceTypeList',
                     helpBlock:'How Rpc Server should access DNS Services on the DNS Server',
-                    custom:false,
+                    visibleOnCode: 'accountIntegration.microsoft.dns.servicePath:^.+$',
                     displayOrder:30
                 ),
                 new OptionType(
