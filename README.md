@@ -43,8 +43,9 @@ NOT supported fully in this release.
 ### MS DNS Integration Dialog Options
 
 - NAME - Enter a name for the Integration
-- RPC SERVER -  Enter the Name of the server providing access to the Microsoft DNS Services. This is the Server Morpheus will connect to directly. **NOTE** This will also be the DNS Server if accessing the DNS Services directly.
-- USE AGENT FOR RPC checkbox. **NEW in 3.2** Select this option to have the Plugin use a configured Agent to handle the Morpheus to Windows Rpc connection. The RPC SERVER should be an instance or managed vm and the Morpheus Agent should be configured to Logon As the DNS Service user.
+- RPC SERVER - Enter the Name of the server providing access to the Microsoft DNS Services. This is the Server Morpheus will connect to directly. **NOTE** This will also be the DNS Server if accessing the DNS Services directly.
+- RPC PORT - (Visible if USE AGENT FOR RPC is unchecked). The WinRm port number 5985/5986. Default is 5985
+- USE AGENT FOR RPC checkbox. **NEW** Select this option to have the Plugin use a configured Agent to handle the Morpheus to Windows Rpc connection. The RPC SERVER should be an instance or managed vm and the Morpheus Agent should be configured to Logon As the DNS Service user.
 - CREDENTIALS - Provide account credentials for the integration. You may use credentials already stored in Morpheus or create new Username/Password credentials.
 - ZONE FILTER was introduced in v2.0 of the plugin. The ZONE FILTER is a comma separated list of glob style filters which can be used to specify the zones that Morpheus will import and sync.
   - Glob style filters apply to the zone name ONLY and at a domain level.
@@ -52,10 +53,10 @@ NOT supported fully in this release.
   - Wildcarding stops at the . (period)
   - Leave blank to import ALL forward and reverse zones
 - DNS SERVER - If the RPC SERVER is not the server hosting DNS Services then add the FQDN name of the DNS server here. Leave blank if the RPC SERVER is also the DNS Server.
-- SERVICE TYPE - **NEW in 3.2** This option informs the plugin how the RPC SERVER should contact the DNS SERVER. There are 3 supported options                                        
-  - **local** : When the RPC SERVER is the DNS Server local is the default and ONLY option.
-  - **wmi** : Use wmi when the RPC SERVER contacts the DNS Server over wmi. This is normally the default when using and intermediate RPC SERVER                       
-  - **winrm** : Use this option when the RPC SERVER connects to DNS SERVER over a winrm session. Not often used.                                                    
+- SERVICE TYPE - **NEW** (Visible if the DNS SERVER is not blank). This option informs the plugin how the RPC SERVER should contact the DNS SERVER. There are 3 supported options                                        
+  - **local** : When the RPC SERVER is the DNS Server (ie when DNS SERVER is blank), local is the default and ONLY option.
+  - **wmi** : Use wmi when the RPC SERVER contacts the DNS Server over wmi. This is normally the default option when using and intermediate RPC SERVER                       
+  - **winrm** : Use this option when the RPC SERVER connects to DNS SERVER over a winrm session. Not often used due to WinRm restrictions on Domain Controllers                                                    
 - INVENTORY EXISTING - Hove the integration import and sync all DNS records for the matching Zones. Using this option is not recommended for installations with large namespaces.
 - CREATE POINTERS -  have DNS create a PTR record when the forward record is created. 
  
@@ -79,8 +80,10 @@ This plugin includes improvements in error handling and validation. Connectivity
 
 ### DNS Record validation and Error Handling
 
-- DNS records are now fully validated before they are created. Only record types A, CNAME and PTR are currently supported.
-- The integration will return an error if a matching DNS record already exists in DNS. This is **new** behaviour and prevents duplicates being added to Morpheus
+- DNS records are now fully validated before they are created. Only record types A, AAAA, CNAME and PTR are currently supported.
+- Adding a DNS Record which already exists (ie fqdn and IPAddress match an existing record in DNS) would normally return an error (code 9711) - this is masked to a success to prevent Morpheus aborting the provision.
+- Removing a DNS Record that does not exist in DNS (error 9714) is also masked to success to have Morpheus delete its copy
+- If a fwd record is created but the PTR record fails (due to missing PTR zone error 9715). This is also masked to success to prevent Morpheus aborting the Provision 
 - All error are logged to the Morpheus Health logs
 
 ### Intermediary Server Support
@@ -90,14 +93,19 @@ To use an intermediate server:
 - enter the fqdn of the Dns Server as DNS SERVER
 - enter **wmi** or **winrm** as the SERVICE TYPE
 
+** NOTE ** the intermediate Server MUST have the Powershell DNS Server Management Tools Installed
+
 This plugin uses a technique where Powershell script blocks are executed using Invoke-Command.
 Using securely cached credentials stored in the local user profile on the intermediate server, Invoke-Command can execute script blocks on remote computers (-ComputerName parameter) with specified Credentials (-Credential). 
 Using this method allows for a Kerberos login from the Intermediate Server to the DNS Server overcoming NTLM impersonation restrictions. Credentials are securely cached using Windows DPAPI and can only be access by the computer and user account that cached them. When using an intermediate server 2 methods can be employed to connect the DNS Services.
-Using winrm the script blocks are invoked on the DNS Server using PS Remoting which will require winRm access on the DNS Server. A second technique is to use WMI rpc calls (where the DNS cmdlets specify a -Computername parameter). In this case the service account will require access to the Microsoft DNS WMI namespace on the DNS Server and in most cases the intermediate windows server must be tusted for delegation.
+Using winrm the script blocks are invoked on the DNS Server using PS Remoting which will require winRm access on the DNS Server. A second technique is to use WMI rpc calls (where the DNS cmdlets specify a -Computername parameter). 
+In this case the service account will require access to the Microsoft DNS WMI namespace on the DNS Server and in most cases the intermediate windows server Computer Account must be trusted for delegation in Active Directory Users and Computer to allow Kerberos access to any service unless you know the specific Service Principal Names for your environment.
+
+**NOTE** that if the Morpheus Agent is used as Rpc Transport and the agent logs in with the service Credentials then delegation of the Computer Account may not be required as the service runs in much the same way as an interactive login.
 
 ### AWS Directory Services Support
 
-V2.2 support AWS Active Directory service. 
+Support AWS Active Directory service. 
 
 - Access is only possible via a correctly configured intermediate server (RPC SERVER) hosted in AWS and having the DNS Management Tools installed. 
 - The DNS SERVER must be the fully qualified name of one of the AWS Domain controllers.
@@ -105,3 +113,12 @@ V2.2 support AWS Active Directory service.
 - The RPC SERVER computer object should be trusted for delegation for all Kerberos Services on the AWS Directory Service domain controllers. This can be performed using AD Users and Computers to modify the properties of the RPC SERVER Computer object. Right click the computer object, select properties and open the Delegation tab. Select the Radio button **Trust this computer for delegation to any service (Kerberos Only). Click OK to Save
 
 Note it is possible to finely tune the delegation so that the RPC SERVER computer object can only delegate to specific services if this is required.
+
+### Using Morpheus Agent as Rpc Transport
+This feature is available in Morpheus 6.3.3 and above.
+
+When using the Agent as the Rpc Transport you will need a Managed Windows Instance joined to the Active Directory Domain you wish to manage.
+The Managed Instance/Server must have the Morpheus Agent configured to logon as the DNS Service Account.
+Enter the full qualified hostname of the Server Object in the RPC SERVER textbox.  If the server cannot be located with a configured Agent and error message is displayed. Check the server name is correct.
+
+Using the agent as Rpc Transport in this way overcomes Kerberos Delegation issues and has a huge performance benefit as data is transported via RabbitMQ

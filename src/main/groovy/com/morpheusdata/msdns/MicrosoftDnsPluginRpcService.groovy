@@ -41,7 +41,7 @@ class MicrosoftDnsPluginRpcService {
 
         //Setup rpc data from the integration
         String rpcHost = integration.serviceUrl
-        Integer rpcPort = integration.servicePort ?: 5985
+        Integer rpcPort = integration.servicePort?.toInteger() ?: 5985
         String servicePath = integration.servicePath
         String username = integration.credentialData?.username ?: integration.serviceUsername
         String password = integration.credentialData?.password ?: integration.servicePassword
