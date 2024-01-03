@@ -99,7 +99,7 @@ This plugin uses a technique where Powershell script blocks are executed using I
 Using securely cached credentials stored in the local user profile on the intermediate server, Invoke-Command can execute script blocks on remote computers (-ComputerName parameter) with specified Credentials (-Credential). 
 Using this method allows for a Kerberos login from the Intermediate Server to the DNS Server overcoming NTLM impersonation restrictions. Credentials are securely cached using Windows DPAPI and can only be access by the computer and user account that cached them. When using an intermediate server 2 methods can be employed to connect the DNS Services.
 Using winrm the script blocks are invoked on the DNS Server using PS Remoting which will require winRm access on the DNS Server. A second technique is to use WMI rpc calls (where the DNS cmdlets specify a -Computername parameter). 
-In this case the service account will require access to the Microsoft DNS WMI namespace on the DNS Server and in most cases the intermediate windows server Computer Account must be trusted for delegation in Active Directory Users and Computer to allow Kerberos access to any service unley you know the specific Service Principal Names for your environment.
+In this case the service account will require access to the Microsoft DNS WMI namespace on the DNS Server and in most cases the intermediate windows server Computer Account must be trusted for delegation in Active Directory Users and Computer to allow Kerberos access to any service unless you know the specific Service Principal Names for your environment.
 
 **NOTE** that if the Morpheus Agent is used as Rpc Transport and the agent logs in with the service Credentials then delegation of the Computer Account may not be required as the service runs in much the same way as an interactive login.
 
@@ -119,6 +119,6 @@ This feature is available in Morpheus 6.3.3 and above.
 
 When using the Agent as the Rpc Transport you will need a Managed Windows Instance joined to the Active Directory Domain you wish to manage.
 The Managed Instance/Server must have the Morpheus Agent configured to logon as the DNS Service Account.
-Enter the full qualified hostname of the Server Object in the RPC SERVER textbox.  If the server cannot be located witha  configured Agent and error message is displayed. Check the server name is correct.
+Enter the full qualified hostname of the Server Object in the RPC SERVER textbox.  If the server cannot be located with a configured Agent and error message is displayed. Check the server name is correct.
 
 Using the agent as Rpc Transport in this way overcomes Kerberos Delegation issues and has a huge performance benefit as data is transported via RabbitMQ
