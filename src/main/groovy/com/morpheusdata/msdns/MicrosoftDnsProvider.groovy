@@ -676,7 +676,8 @@ class MicrosoftDnsProvider implements DNSProvider {
                     optionSource:'msdnsServiceTypeList',
                     helpBlock:'How Rpc Server should access DNS Services on the DNS Server',
                     visibleOnCode: 'accountIntegration.microsoft.dns.servicePath:^.+$',
-                    displayOrder:30
+                    displayOrder:30,
+                    defaultValue:'local'
                 ),
                 new OptionType(
                     code:'accountIntegration.microsoft.dns.serviceFlag', 
