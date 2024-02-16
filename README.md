@@ -1,6 +1,6 @@
 # Microsoft DNS Morpheus Plugin
 
-## Version 3
+## Version 3.3
 
 Version 3.3.x is built to support Morpheus version 6.3 Standard Release
 Version 3.2.x is built to support Morpheus version 6.2 LTS Release
